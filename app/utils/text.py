@@ -20,6 +20,11 @@ ELLIPSIS = "…"
 
 _TAG_RE = re.compile(r"<[^>]*>")
 
+# Незакрытый HTML-тег или entity в самом конце строки. Если резать «на границе
+# лимита», легко получить «скидка &amp» или «<b>текст</b» — Telegram вернёт
+# 400 «can't parse entities», и сообщение потеряется.
+_INCOMPLETE_HTML_END = re.compile(r"(?:&[A-Za-z0-9#]*|<[A-Za-z/][^>]*)$")
+
 # Символы, которые «приклеиваются» к предыдущему эмодзи: вариационные
 # селекторы, ZWJ, тон кожи, региональные индикаторы, keycap, теги.
 _COMBINING = frozenset({0x200D, 0xFE0E, 0xFE0F, 0x20E3})
@@ -39,16 +44,39 @@ def strip_tags(value: Any) -> str:
     return _TAG_RE.sub("", str(value)).strip()
 
 
+def _safe_cut_position(text: str, limit: int) -> int:
+    """
+    Позиция обрезки, которая не разрезает HTML-entity или тег пополам.
+
+    ``text`` уже может содержать HTML (например, экранированные ``&amp;`` или
+    условия услуги, которые админ набирает тегами). Простой ``text[:limit]``
+    превращал «кириллица &amp» в «&» без точки с запятой и мог ронять весь
+    ответ с ``400 can't parse entities``.
+    """
+    pos = max(0, min(limit, len(text)))
+    while pos > 0 and _INCOMPLETE_HTML_END.search(text[:pos]):
+        pos -= 1
+    return pos
+
+
 def truncate(value: Any, limit: int) -> str:
-    """Обрезает строку до ``limit`` символов, добавляя многоточие."""
+    """
+    Обрезает строку до ``limit`` символов, добавляя многоточие.
+
+    Обрезка не рвёт ``&amp;``/``&lt;`` и не оставляет незакрытый ``<b>``:
+    иначе Telegram отвечает 400 и сообщение теряется.
+    """
     if value is None:
         return ""
     text = str(value)
     if len(text) <= limit:
         return text
     if limit <= 1:
-        return text[:limit]
-    return text[: limit - 1].rstrip() + ELLIPSIS
+        return text[:_safe_cut_position(text, limit)]
+    # Сначала находим безопасную позицию под многоточие (1 символ), затем
+    # снова проверяем, чтобы ``…`` не попадало внутрь entity/тега.
+    cut = _safe_cut_position(text, max(0, limit - 1))
+    return text[:cut].rstrip() + ELLIPSIS
 
 
 def fit(template: str, limit: int, **values: Any) -> str:

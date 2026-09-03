@@ -227,7 +227,7 @@ python -m pytest tests -q
 (`400 Bad Request`). Именно так находятся баги вида «сообщение молча теряется».
 
 ```bash
-python -m pytest tests -q      # 81 passed
+python -m pytest tests -q      # 87 passed
 python -m ruff check app tests # линтер
 ```
 

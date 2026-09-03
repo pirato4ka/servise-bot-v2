@@ -143,7 +143,10 @@ async def admin_reply(message: Message):
     user_id = ticket["user_id"]
     admin_text = message.text or message.caption or ""
 
-    if not admin_text and not message.photo and not message.document and not message.voice:
+    if not admin_text and not any((
+        message.photo, message.document, message.voice, message.video,
+        message.audio, message.animation, message.sticker, message.video_note,
+    )):
         await message.reply(ADMIN_SEND_ERROR_NO_TEXT_RU)
         return
 
@@ -183,6 +186,33 @@ async def admin_reply(message: Message):
                     chat_id=user_id, voice=message.voice.file_id, **kw
                 ),
             )
+        elif message.video:
+            await _deliver_media(
+                message, user_id, body, lang,
+                lambda **kw: message.bot.send_video(
+                    chat_id=user_id, video=message.video.file_id, **kw
+                ),
+            )
+        elif message.audio:
+            await _deliver_media(
+                message, user_id, body, lang,
+                lambda **kw: message.bot.send_audio(
+                    chat_id=user_id, audio=message.audio.file_id, **kw
+                ),
+            )
+        elif message.animation:
+            await _deliver_media(
+                message, user_id, body, lang,
+                lambda **kw: message.bot.send_animation(
+                    chat_id=user_id, animation=message.animation.file_id, **kw
+                ),
+            )
+        elif message.sticker:
+            await message.bot.send_sticker(chat_id=user_id, sticker=message.sticker.file_id)
+            await message.bot.send_message(chat_id=user_id, text=body)
+        elif message.video_note:
+            await message.bot.send_video_note(chat_id=user_id, video_note=message.video_note.file_id)
+            await message.bot.send_message(chat_id=user_id, text=body)
 
         # Запоминаем ответ админа, чтобы reply на reply тоже находил заявку
         await crud.link_admin_message(message.message_id, ticket["id"], reply_to_id)

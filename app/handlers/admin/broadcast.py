@@ -11,7 +11,7 @@ from aiogram.filters import Command, StateFilter
 from app.config import settings
 from app.database import crud
 from app.states.admin_states import Broadcast
-from app.utils.telegram import cb_send
+from app.utils.telegram import cb_chat_id, cb_send
 from app.utils.text import MESSAGE_LIMIT, esc, fit, strip_tags, truncate
 
 router = Router()
@@ -54,7 +54,9 @@ async def broadcast_cancel_fallback(message: Message, state: FSMContext):
 async def broadcast_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
-    if not await is_admin_user(cb.from_user.id, cb.message.chat.id):
+    # Сообщение кнопки может быть недоступно (InaccessibleMessage/отсутствовать):
+    # раньше `cb.message.chat.id` давал AttributeError и кнопка не открывала мастер.
+    if not await is_admin_user(cb.from_user.id, cb_chat_id(cb)):
         await cb.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -80,7 +82,7 @@ async def broadcast_start(cb: CallbackQuery, state: FSMContext):
 
 @router.message(StateFilter(Broadcast.waiting_interval), F.text)
 async def broadcast_interval(message: Message, state: FSMContext):
-    if not await is_admin_user(message.from_user.id, message.chat.id):
+    if not message.from_user or not await is_admin_user(message.from_user.id, message.chat.id):
         return
 
     text = message.text.strip().replace(",", ".")
@@ -107,7 +109,7 @@ async def broadcast_interval(message: Message, state: FSMContext):
 
 @router.message(StateFilter(Broadcast.waiting_text))
 async def broadcast_text(message: Message, state: FSMContext):
-    if not await is_admin_user(message.from_user.id, message.chat.id):
+    if not message.from_user or not await is_admin_user(message.from_user.id, message.chat.id):
         return
 
     if message.text and message.text.startswith("/"):
@@ -133,7 +135,7 @@ async def broadcast_text(message: Message, state: FSMContext):
 
 @router.message(StateFilter(Broadcast.waiting_photo), Command("skip"))
 async def broadcast_skip_photo(message: Message, state: FSMContext):
-    if not await is_admin_user(message.from_user.id, message.chat.id):
+    if not message.from_user or not await is_admin_user(message.from_user.id, message.chat.id):
         return
     await state.update_data(photo_file_id=None)
     await state.set_state(Broadcast.waiting_confirm)
@@ -142,7 +144,7 @@ async def broadcast_skip_photo(message: Message, state: FSMContext):
 
 @router.message(StateFilter(Broadcast.waiting_photo), F.photo)
 async def broadcast_photo(message: Message, state: FSMContext):
-    if not await is_admin_user(message.from_user.id, message.chat.id):
+    if not message.from_user or not await is_admin_user(message.from_user.id, message.chat.id):
         return
     await state.update_data(photo_file_id=message.photo[-1].file_id)
     await state.set_state(Broadcast.waiting_confirm)
@@ -151,7 +153,7 @@ async def broadcast_photo(message: Message, state: FSMContext):
 
 @router.message(StateFilter(Broadcast.waiting_photo), F.text)
 async def broadcast_photo_text_fallback(message: Message, state: FSMContext):
-    if not await is_admin_user(message.from_user.id, message.chat.id):
+    if not message.from_user or not await is_admin_user(message.from_user.id, message.chat.id):
         return
     if message.text.startswith("/"):
         await message.reply("❌ Неизвестная команда.\nОтправьте фото, напишите /skip или /cancel.")
@@ -218,7 +220,7 @@ async def send_preview(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "broadcast:confirm")
 async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
-    if not await is_admin_user(cb.from_user.id, cb.message.chat.id):
+    if not await is_admin_user(cb.from_user.id, cb_chat_id(cb)):
         await cb.answer("⛔ Нет доступа", show_alert=True)
         return
 
@@ -404,7 +406,7 @@ async def broadcast_loop(
 
 @router.message(Command("stopbroadcast"))
 async def stop_broadcast(message: Message):
-    if not await is_admin_user(message.from_user.id, message.chat.id):
+    if not message.from_user or not await is_admin_user(message.from_user.id, message.chat.id):
         return
 
     args = message.text.split()
@@ -432,7 +434,7 @@ async def stop_broadcast(message: Message):
 
 @router.message(Command("broadcasts"))
 async def list_broadcasts(message: Message):
-    if not await is_admin_user(message.from_user.id, message.chat.id):
+    if not message.from_user or not await is_admin_user(message.from_user.id, message.chat.id):
         return
 
     rows = await crud.get_recent_broadcasts()
