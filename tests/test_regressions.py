@@ -571,6 +571,85 @@ async def test_edit_service_after_state_lost(dp, bot, service):
 
 
 # ─────────────────────────────────────────────────────────────
+#  Блокировка клиентов
+# ─────────────────────────────────────────────────────────────
+
+async def _admin_cmd(dp, bot, text, msg_id=6001):
+    await dp.feed_update(bot, msg_update(message(
+        text, chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+        from_user=user(ADMIN_ID), message_id=msg_id)))
+
+
+async def test_ban_command_blocks_client(dp, bot, service):
+    """/ban был недоступен: флаг is_banned существовал, но выставить его было нечем."""
+    await crud.upsert_user(USER_ID, "tester", "Тест")
+    await crud.add_admin(ADMIN_ID)
+    bot.session.clear()
+
+    await _admin_cmd(dp, bot, f"/ban {USER_ID}")
+
+    assert await crud.is_banned(USER_ID)
+    assert any("заблоковані" in t for t in bot.session.texts_to(USER_ID)), bot.session.texts_to(USER_ID)
+    assert any("заблокирован" in t for t in bot.session.texts_to(ADMIN_CHAT_ID))
+
+
+async def test_ban_by_username(dp, bot, service):
+    await crud.upsert_user(USER_ID, "tester", "Тест")
+    await crud.add_admin(ADMIN_ID)
+
+    await _admin_cmd(dp, bot, "/ban @tester")
+
+    assert await crud.is_banned(USER_ID)
+
+
+async def test_ban_unknown_user_reports_error(dp, bot, service):
+    await crud.add_admin(ADMIN_ID)
+
+    await _admin_cmd(dp, bot, "/ban @no_such_user")
+
+    assert any("не найден" in t for t in bot.session.texts_to(ADMIN_CHAT_ID))
+
+
+async def test_banned_client_cannot_create_ticket(dp, bot, service):
+    """Бан действительно блокирует: новые заявки от клиента не создаются."""
+    await crud.upsert_user(USER_ID, "tester", "Тест")
+    await crud.ban_user(USER_ID)
+
+    await dp.feed_update(bot, msg_update(message("/start", chat_id=USER_ID, from_user=user(USER_ID))))
+    assert any("заблоковані" in t for t in bot.session.texts_to(USER_ID))
+
+    await dp.feed_update(bot, cb_update("agree:test_service", message(chat_id=USER_ID), from_user=user(USER_ID)))
+    assert await crud.get_last_ticket_by_user(USER_ID) is None
+
+
+async def test_unban_restores_access(dp, bot, service):
+    await crud.upsert_user(USER_ID, "tester", "Тест")
+    await crud.ban_user(USER_ID)
+    await crud.add_admin(ADMIN_ID)
+    bot.session.clear()
+
+    await _admin_cmd(dp, bot, f"/unban {USER_ID}")
+
+    assert not await crud.is_banned(USER_ID)
+    assert any("розблоковано" in t for t in bot.session.texts_to(USER_ID))
+
+    # после разбана клиент снова проходит анкету
+    await _fill_questionnaire(dp, bot)
+    assert await crud.get_last_ticket_by_user(USER_ID) is not None
+
+
+async def test_ban_skips_broadcast(dp, bot, service):
+    """Забаненные не получают рассылку (проверка уже была, фиксируем тестом)."""
+    await crud.upsert_user(101, "u101", "U101")
+    await crud.ban_user(101)
+    bid = await crud.create_broadcast(ADMIN_ID, 24, "Всем привет", None)
+
+    await broadcast_module.run_broadcast(bot, bid, "Всем привет", None)
+
+    assert bot.session.texts_to(101) == []
+
+
+# ─────────────────────────────────────────────────────────────
 #  Юнит-проверки утилит
 # ─────────────────────────────────────────────────────────────
 

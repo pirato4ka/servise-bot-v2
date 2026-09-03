@@ -69,6 +69,13 @@ async def agree_handler(callback: CallbackQuery, state: FSMContext):
 
     lang = await crud.get_user_lang(callback.from_user.id)
 
+    # Заблокированный клиент не должен создавать новые заявки: раньше флаг
+    # is_banned глушил только свободные сообщения в user_chat.
+    if await crud.is_banned(callback.from_user.id):
+        await answer_callback(callback)
+        await cb_send(callback, t("banned_user", lang))
+        return
+
     # Услугу могли выключить в админке уже после того, как пользователь
     # увидел кнопку — не пускаем в анкету по неактивной услуге.
     if not service["is_active"]:

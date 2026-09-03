@@ -1,6 +1,6 @@
 # Что исправлено
 
-Все изменения проверены тестами: `python -m pytest tests -q` → **75 passed**.
+Все изменения проверены тестами: `python -m pytest tests -q` → **81 passed**.
 Для прогона нужно окружение Python 3.11 (aiogram 3.7 не собирается на 3.13):
 
 ```bash
@@ -155,6 +155,7 @@ ID с двоеточием (`vip:gold`) ломал разбор — карточ
 | `class Config` у pydantic-settings — DeprecationWarning при каждом старте | `model_config = SettingsConfigDict(...)` |
 | `except:` (bare) в трёх местах | конкретные исключения |
 | Пакет `app/middlewares/` был пустым, а документация обещала антифлуд | `ThrottlingMiddleware`: 5 свободных сообщений в 10 секунд, админы и анкета не ограничиваются |
+| `users.is_banned`, `crud.ban_user/unban_user` и тексты про бан были, а команды — нет: флаг ставился только руками в SQLite и не мешал оформлять заявки | `/ban` и `/unban` в админ-чате (по user_id или @username), заблокированный клиент не создаёт заявку и видит `banned_user` |
 | Документация расходилась с кодом (aiocryptopay, 6 шагов мастера, `plan_date`, volume `./bot.db`, несуществующие `formatter.py`/`models.py`, мусорные строки в README) | приведена в соответствие |
 
 ---

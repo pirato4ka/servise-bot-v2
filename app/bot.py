@@ -12,7 +12,7 @@ from app.database.db import init_db
 from app.handlers import start, services, questionnaire, user_chat
 from app.handlers.admin import (
     admin_panel, services_crud, reply_handler, stats, membership,
-    confirm_payment, payment_check, debug_all, broadcast
+    confirm_payment, payment_check, debug_all, broadcast, ban
 )
 from app.services.invoice_watcher import invoice_watcher
 
@@ -50,6 +50,7 @@ def build_dispatcher() -> Dispatcher:
     dp.include_router(admin_panel.router)
     dp.include_router(services_crud.router)
     dp.include_router(stats.router)
+    dp.include_router(ban.router)
     dp.include_router(membership.router)
 
     # Пользовательские

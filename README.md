@@ -227,7 +227,7 @@ python -m pytest tests -q
 (`400 Bad Request`). Именно так находятся баги вида «сообщение молча теряется».
 
 ```bash
-python -m pytest tests -q      # 75 passed
+python -m pytest tests -q      # 81 passed
 python -m ruff check app tests # линтер
 ```
 
@@ -254,3 +254,5 @@ python -m ruff check app tests # линтер
 | `/broadcasts` | админ-чат | список рассылок |
 | `/stopbroadcast <id>` | админ-чат | остановить рассылку |
 | `/confirm <user_id> <сумма> <актив>` | админ-чат | выставить счёт вручную |
+| `/ban <user_id или @username>` | админ-чат | заблокировать клиента |
+| `/unban <user_id или @username>` | админ-чат | снять блокировку |

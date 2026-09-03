@@ -46,6 +46,11 @@ async def cmd_start(message: Message, state: FSMContext):
 
     await crud.upsert_user(user_id, username, full_name, source)
 
+    if await crud.is_banned(user_id):
+        lang = await crud.get_user_lang(user_id)
+        await message.answer(t("banned_user", lang))
+        return
+
     # Проверяем — выбран ли язык?
     user_row = await crud.get_user(user_id)
     lang = user_row["lang"] if user_row and user_row["lang"] else None
