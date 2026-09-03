@@ -2,7 +2,7 @@
 
 **Версия:** 3.0 CryptoBot Edition  
 **Дата:** 21.07.2026  
-**Стек:** Python 3.11, aiogram 3.7, SQLite, aiocryptopay  
+**Стек:** Python 3.11, aiogram 3.7, SQLite (aiosqlite), Crypto Pay API на aiohttp  
 **Локализация:** User UI — українська, Admin UI — русский  
 
 ---
@@ -30,13 +30,16 @@
 ```
 [ Telegram API ] 
       ↓
-[ Middlewares: Throttling, AdminAutoRegister ]
+[ Middleware: Throttling — антифлуд свободных сообщений юзера ]
       ↓
-[ Routers: membership, reply_handler, confirm_payment, payment_check, admin_panel, start, services, questionnaire, user_chat ]
+[ Routers (порядок важен): confirm_payment, broadcast, reply_handler, payment_check,
+               admin_panel, services_crud, stats, membership,
+               start, questionnaire, services, user_chat (+ debug_all при DEBUG_ALL=1) ]
       ↓
-[ Business Logic: cryptopay.py, formatter.py ]
+[ Business Logic: cryptopay.py, invoice_watcher.py, utils/ ]
       ↓
-[ Data Layer: SQLite (users, services, tickets, invoices, admins, messages_log) ]
+[ Data Layer: SQLite (users, services, tickets, invoices, admins, messages_log,
+                      broadcasts, admin_messages) ]
 ```
 
 ### 2.2 Компоненты
@@ -45,9 +48,10 @@
 |-----------|------|-----------------|
 | Entry point | `app/bot.py` | init_db, регистрация роутеров, polling |
 | Config | `app/config.py` | pydantic-settings, .env |
-| DB | `app/database/db.py` | Создание таблиц, сид 3 услуг |
+| DB | `app/database/db.py` | Создание таблиц и миграции (WAL, двуязычные услуги, недостающие колонки) |
 | CRUD | `app/database/crud.py` | Все запросы к БД |
-| CryptoPay | `app/services/cryptopay.py` | Создание бесконечных инвойсов |
+| CryptoPay | `app/services/cryptopay.py` | Создание бессрочных инвойсов, проверка статуса |
+| Invoice Watcher | `app/services/invoice_watcher.py` | Фоновая проверка оплаты пачками |
 | User Flow | `handlers/start.py, services.py, questionnaire.py` | Выбор услуги, анкета |
 | Free chat | `handlers/user_chat.py` | Форвард свободных сообщений юзера в тред заявки |
 | Admin Reply | `handlers/admin/reply_handler.py` | REPLY из админ-чата -> юзеру |
@@ -56,17 +60,23 @@
 | Membership | `handlers/admin/membership.py` | Динамические админы |
 | Admin Panel | `handlers/admin/admin_panel.py, services_crud.py, stats.py` | /admin, CRUD, статистика |
 | Keyboards | `keyboards/reply.py, inline.py` | Reply и Inline клавиатуры |
+| Middlewares | `middlewares/throttling.py` | Антифлуд свободных сообщений клиента |
+| Utils | `utils/text.py, telegram.py, callbacks.py` | Экранирование HTML, лимиты Telegram, разбор callback_data |
 | Texts | `data/texts.py` | Разделение UA/RU |
 
 ### 2.3 База данных (ER)
 
 ```sql
 users(user_id PK, username, full_name, custom_name, age, plan_date, service_id FK, source, first_seen, last_active, is_banned)
-services(id PK, emoji, title, button_label UNIQUE, short_desc, terms, is_active, created_at)
-tickets(id PK, user_id FK, admin_message_id UNIQUE, admin_chat_id, service_id, status[open/invoice_sent/paid/declined], created_at)
+services(id PK, emoji, title_ua, title_ru, button_label_ua UNIQUE, button_label_ru UNIQUE,
+         short_desc_ua, short_desc_ru, terms_ua, terms_ru, is_active, created_at)
+tickets(id PK, user_id FK, admin_message_id [index], admin_chat_id, service_id,
+        status[open/invoice_sent/paid/declined], created_at)
 admins(user_id PK, added_at, added_by)
-invoices(id PK, crypto_invoice_id UNIQUE, user_id FK, ticket_id FK, asset, amount, bot_invoice_url, mini_app_url, status[active/paid], payload, created_at)
+invoices(id PK, crypto_invoice_id, user_id FK, ticket_id FK, asset, amount, bot_invoice_url, mini_app_url, status[active/paid], payload, created_at)
 messages_log(id PK, user_id, ticket_id, direction[user_to_admin/admin_to_user], text, created_at)
+broadcasts(id PK, admin_id, interval_hours, text, photo_file_id, is_active, last_sent_at, created_at)
+admin_messages(admin_message_id PK, ticket_id, parent_message_id, created_at)
 ```
 Индексы по `admin_message_id`, `user_id`, `crypto_invoice_id` для быстрого поиска тикетов.
 
@@ -84,9 +94,10 @@ messages_log(id PK, user_id, ticket_id, direction[user_to_admin/admin_to_user], 
  SERVICE_CHOSEN_HEADER_UA + terms из БД + Inline[✅ Погоджуюсь]
    ↓
  agree:service_id → FSM Questionnaire
-   1. ASK_NAME_UA → name
-   2. ASK_AGE_UA → валидация 16-99
-   3. ASK_PLAN_DATE_UA → plan_date
+   1. t('ask_name') → обращение (min 2 символа)
+   2. t('ask_age') → возраст, валидация 16-99
+   3. t('ask_recipient') → кому требуется услуга: Мне / Родному / Другу
+      (в users.recipient пишется каноническое me / relative / friend)
    ↓
  Создается тикет, отправка в админ-чат с кнопками [Подтвердить][Отклонить]
    ↓
@@ -119,17 +130,17 @@ messages_log(id PK, user_id, ticket_id, direction[user_to_admin/admin_to_user], 
 **Вариант B — Подтвердить с ценой:**
 1.  Нажатие `ticket:confirm:{admin_message_id}` → FSM `ConfirmPayment.waiting_price`
 2.  Бот в админ-чате: `Введите договорную цену в формате: 100 USDT`
-3.  Админ пишет `150 USDT` → `parse_price()` → `(150, "USDT")`
-4.  Вызов `create_infinite_invoice(asset, amount, description, payload)`:
+3.  Админ пишет `150 USDT` → `parse_price()` → `(150.0, "USDT")`
+4.  Вызов `create_infinite_invoice(asset, amount, description, payload)`
+    из `app/services/cryptopay.py` (собственный клиент Crypto Pay API на aiohttp):
     ```python
-    client = AioCryptoPay(token, network)
-    invoice = await client.create_invoice(
+    invoice = await create_infinite_invoice(
         asset="USDT",
-        amount=150,
-        description="Оплата VIP...",
+        amount=150.0,
+        description="Оплата VIP для 123456. Цена 150 USDT",
         payload="user_id:ticket_id:admin_msg_id",
         allow_anonymous=True,
-        # expires_in не передаем → бесконечный
+        # expires_in не передаем → бессрочный счёт
     )
     ```
 5.  Сохранение в `invoices`, отправка юзеру, отправка админу, смена статуса тикета на `invoice_sent`.
@@ -189,11 +200,20 @@ DB_PATH=bot.db - путь к SQLite
 **🛠 Услуги:**
 - Список: `🟢 VIP Супровід` / `🔴 Выключена`
 - Просмотр карточки: ID, кнопка, описание, условия, статус
-- Действия: ✏️ Редактировать (пока меняет только условия), ❌ Удалить, 🔴/🟢 Вкл/Выкл
-- ➕ Добавить: FSM 6 шагов: ID латиницей, эмодзи, название, текст кнопки, короткое описание, полные условия (HTML)
+- Действия: ✏️ Редактировать (язык → поле → значение), 🇺🇦→🇷🇺 скопировать перевод,
+  ❌ Удалить, 🔴/🟢 Вкл/Выкл
+- ➕ Добавить: FSM 10 шагов: ID латиницей (`[a-z0-9_]{3,32}`), эмодзи,
+  название UA/RU, краткое описание UA/RU, условия UA/RU, текст кнопки UA/RU
+  (на «русских» шагах `=` копирует украинский вариант)
 
 **👥 Админы:**
 - Список всех с датой добавления. Динамически обновляется при входе/выходе из админ-чата.
+
+**Блокировка клиентов:**
+- `/ban <user_id или @username>` — клиент больше не может оформить заявку и писать
+  в поддержку, не попадает в рассылки, в `/users` помечен ⛔;
+- `/unban <user_id или @username>` — снимает блокировку;
+- о смене статуса клиенту приходит сообщение (`banned_user` / `unbanned_user`).
 
 ---
 
@@ -217,7 +237,8 @@ docker-compose logs -f
 
 `docker-compose.yml`:
 - `restart: unless-stopped`
-- volume `./bot.db:/app/bot.db` для сохранения БД
+- именованный том `bot-data:/data` и `DB_PATH=/data/bot.db` — база переживает
+  пересоздание контейнера (админы, заявки и история не теряются)
 - `env_file: .env`
 
 ### Systemd (на VPS без Docker)
@@ -250,7 +271,11 @@ WantedBy=multi-user.target
 - Токены только в `.env`, `.env` в `.gitignore`
 - Админ-чат должен быть приватным, invite-link не светить
 - Ответы юзеру всегда от имени бота, ID админов не палятся
-- Антифлуд можно добавить middleware (1.5 сек для юзеров)
+- Антифлуд: `middlewares/throttling.py` — не более 5 свободных сообщений за 10 секунд
+  от одного клиента (админы и анкета не ограничиваются); при превышении клиент
+  получает просьбу подождать, а админ-чат не тонет в спаме
+- Пользовательские тексты экранируются перед подстановкой в HTML-шаблоны,
+  длины сообщений и подписей укладываются в лимиты Telegram (4096/1024/64)
 - SQLite WAL режим, бэкап `bot.db` ежедневно
 - Логи без персональных данных, `messages_log` только для аудита
 - Инвойсы CryptoBot — одноразовые, payload не содержит секретов
@@ -294,7 +319,6 @@ A: Просто добавь его в админ-чат. `membership.py` авт
 
 - Webhook вместо polling + FastAPI для CryptoBot webhook уведомлений об оплате (мгновенное подтверждение без кнопки Проверить)
 - RedisStorage для FSM чтобы не терять анкеты при рестарте
-- Рассылка по пользователям из админ-панели
 - Экспорт статистики в Excel
 - Мультиязычность для админов (RU/UA)
 - Интеграция с TRC20 / TON напрямую без CryptoBot
@@ -307,17 +331,21 @@ A: Просто добавь его в админ-чат. `membership.py` авт
 service-bot-v2/
 ├── app/bot.py
 ├── app/config.py
-├── app/database/
-├── app/data/texts.py
-├── app/handlers/
-├── app/keyboards/
-├── app/services/cryptopay.py
-├── app/states/
+├── app/database/          db.py (схема + миграции), crud.py (все запросы)
+├── app/data/texts.py      UA/RU тексты клиента + RU тексты админа
+├── app/handlers/          start, services, questionnaire, user_chat + admin/*
+├── app/keyboards/         reply.py, inline.py
+├── app/middlewares/       throttling.py (антифлуд)
+├── app/services/          cryptopay.py (Crypto Pay API), invoice_watcher.py
+├── app/states/            FSM-группы
+├── app/utils/             text.py, telegram.py, callbacks.py
+├── tests/                 сквозные сценарии + регрессии (pytest, фейковая сессия Telegram)
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt
+├── requirements.txt / requirements-dev.txt
 ├── .env.example
 ├── README.md
+├── FIXES.md
 └── DOCUMENTATION.md (этот файл)
 ```
 
