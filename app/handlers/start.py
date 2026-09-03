@@ -84,7 +84,7 @@ async def cmd_cancel(message: Message, state: FSMContext):
     """Отмена анкеты в личке: текста про /cancel раньше не было обработчика."""
     await state.clear()
     lang = await crud.get_user_lang(message.from_user.id)
-    kb = await get_services_keyboard()
+    kb = await get_services_keyboard(lang)
     await message.answer(t("cancel_message", lang), reply_markup=kb)
 
 
@@ -95,5 +95,5 @@ async def _send_welcome(message: Message, lang: str, source: str):
         source_line = t("source_direct", lang)
 
     welcome_text = t("welcome", lang).format(source_line=source_line)
-    kb = await get_services_keyboard()
+    kb = await get_services_keyboard(lang)
     await message.answer(welcome_text, reply_markup=kb)

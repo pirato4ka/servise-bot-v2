@@ -27,7 +27,8 @@ def get_recipient_keyboard(lang: str = "ua") -> ReplyKeyboardMarkup:
     )
 
 
-async def get_services_keyboard() -> ReplyKeyboardMarkup:
+async def get_services_keyboard(lang: str = "ua") -> ReplyKeyboardMarkup:
+    """Кнопки услуг — на языке, который выбрал пользователь."""
     services = await crud.get_services(active_only=True)
     if not services:
         return ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
@@ -35,7 +36,8 @@ async def get_services_keyboard() -> ReplyKeyboardMarkup:
     buttons = []
     row = []
     for i, s in enumerate(services):
-        row.append(KeyboardButton(text=s["button_label"]))
+        localized = crud.localize_service(s, lang)
+        row.append(KeyboardButton(text=localized["button_label"]))
         if len(row) == 2 or i == len(services) - 1:
             buttons.append(row)
             row = []

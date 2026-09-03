@@ -33,15 +33,17 @@ def build_session() -> AiohttpSession:
 def build_dispatcher() -> Dispatcher:
     dp = Dispatcher()
 
-    # Админские — порядок важен
+    # Админские — порядок важен.
+    # membership ставим ПОСЛЕДНИМ: его обработчик «любое сообщение в админ-чате»
+    # иначе перехватывал бы ввод мастера добавления услуг и прочие диалоги.
     dp.include_router(confirm_payment.router)
     dp.include_router(broadcast.router)
     dp.include_router(reply_handler.router)
-    dp.include_router(membership.router)
     dp.include_router(payment_check.router)
     dp.include_router(admin_panel.router)
     dp.include_router(services_crud.router)
     dp.include_router(stats.router)
+    dp.include_router(membership.router)
 
     # Пользовательские
     dp.include_router(start.router)

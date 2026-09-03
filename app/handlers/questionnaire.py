@@ -154,7 +154,7 @@ async def q_recipient(message: Message, state: FSMContext):
         name=data["name"],
         age=data["age"],
         recipient=recipient_label(recipient_key),
-        service_title=service["title"],
+        service_title=service["title_ru"] or service["title_ua"],
         service_id=service["id"],
         source=source,
         lang=lang.upper(),

@@ -49,6 +49,31 @@ async def get_users_count():
         await db.close()
 
 
+LANGS = ("ua", "ru")
+SERVICE_LOCALIZED_FIELDS = ("title", "button_label", "short_desc", "terms")
+
+
+def localize_service(service, lang: str = "ua") -> dict | None:
+    """
+    Разворачивает запись услуги под язык пользователя:
+    {title_ua, title_ru} + lang='ua' -> {'title': ..., 'button_label': ...}
+    Если перевод для языка пустой — берём второй язык.
+    """
+    if not service:
+        return None
+
+    row = dict(service)
+    lang = lang if lang in LANGS else "ua"
+    other = "ru" if lang == "ua" else "ua"
+
+    for field in SERVICE_LOCALIZED_FIELDS:
+        value = row.get(f"{field}_{lang}")
+        if value in (None, ""):
+            value = row.get(f"{field}_{other}")
+        row[field] = value
+    return row
+
+
 async def get_service_by_id(sid: str):
     db = await get_db()
     try:
@@ -60,20 +85,56 @@ async def get_service_by_id(sid: str):
 
 
 async def get_service_by_button(label: str):
+    """Кнопка может быть на любом языке — ищем по обеим колонкам."""
     db = await get_db()
     try:
-        async with db.execute("SELECT * FROM services WHERE button_label=?", (label,)) as cur:
+        async with db.execute(
+            "SELECT * FROM services WHERE button_label_ua=? OR button_label_ru=?", (label, label)
+        ) as cur:
             row = await cur.fetchone()
         return row
     finally:
         await db.close()
 
 
+async def is_button_label_taken(label: str, exclude_id: str = None) -> bool:
+    db = await get_db()
+    try:
+        if exclude_id:
+            async with db.execute(
+                "SELECT 1 FROM services WHERE (button_label_ua=? OR button_label_ru=?) AND id<>?",
+                (label, label, exclude_id),
+            ) as cur:
+                row = await cur.fetchone()
+        else:
+            async with db.execute(
+                "SELECT 1 FROM services WHERE button_label_ua=? OR button_label_ru=?", (label, label)
+            ) as cur:
+                row = await cur.fetchone()
+        return row is not None
+    finally:
+        await db.close()
+
+
+def _service_fields(data: dict) -> tuple:
+    """Достаёт двуязычные поля из словаря мастера добавления/редактирования."""
+    return (
+        data.get("emoji", ""),
+        data.get("title_ua", ""), data.get("title_ru", ""),
+        data.get("button_label_ua", ""), data.get("button_label_ru", ""),
+        data.get("short_desc_ua", ""), data.get("short_desc_ru", ""),
+        data.get("terms_ua", ""), data.get("terms_ru", ""),
+    )
+
+
 async def create_service(data: dict):
     db = await get_db()
     try:
-        await db.execute("INSERT INTO services (id, emoji, title, button_label, short_desc, terms) VALUES (?,?,?,?,?,?)",
-                         (data['id'], data['emoji'], data['title'], data['button_label'], data['short_desc'], data['terms']))
+        await db.execute(
+            "INSERT INTO services (id, emoji, title_ua, title_ru, button_label_ua, button_label_ru, "
+            "short_desc_ua, short_desc_ru, terms_ua, terms_ru) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (data["id"], *_service_fields(data)),
+        )
         await db.commit()
     finally:
         await db.close()
@@ -82,8 +143,38 @@ async def create_service(data: dict):
 async def update_service(sid: str, data: dict):
     db = await get_db()
     try:
-        await db.execute("UPDATE services SET emoji=?, title=?, button_label=?, short_desc=?, terms=? WHERE id=?",
-                         (data['emoji'], data['title'], data['button_label'], data['short_desc'], data['terms'], sid))
+        await db.execute(
+            "UPDATE services SET emoji=?, title_ua=?, title_ru=?, button_label_ua=?, button_label_ru=?, "
+            "short_desc_ua=?, short_desc_ru=?, terms_ua=?, terms_ru=? WHERE id=?",
+            (*_service_fields(data), sid),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+EDITABLE_FIELDS = ("emoji", "title", "button_label", "short_desc", "terms")
+
+
+async def update_service_field(sid: str, field: str, value: str):
+    """Правка одного поля: 'emoji' или '<поле>_<язык>' (например terms_ua)."""
+    if field not in EDITABLE_FIELDS and not any(field == f"{f}_{lang}" for f in SERVICE_LOCALIZED_FIELDS for lang in LANGS):
+        raise ValueError(f"Недопустимое поле услуги: {field}")
+    db = await get_db()
+    try:
+        await db.execute(f"UPDATE services SET {field}=? WHERE id=?", (value, sid))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def copy_service_language(sid: str, source: str = "ua"):
+    """Копирует UA-тексты в RU (или наоборот) — чтобы не перепечатывать вручную."""
+    target = "ru" if source == "ua" else "ua"
+    fields = ", ".join(f"{f}_{target}={f}_{source}" for f in SERVICE_LOCALIZED_FIELDS)
+    db = await get_db()
+    try:
+        await db.execute(f"UPDATE services SET {fields} WHERE id=?", (sid,))
         await db.commit()
     finally:
         await db.close()

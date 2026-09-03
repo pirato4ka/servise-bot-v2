@@ -150,6 +150,14 @@ TEXTS = {
         "ua": "🤝 Другу",
         "ru": "🤝 Другу",
     },
+    "btn_pay_cryptobot": {
+        "ua": "💳 Оплатити через CryptoBot",
+        "ru": "💳 Оплатить через CryptoBot",
+    },
+    "btn_check_payment": {
+        "ua": "🔄 Перевірити оплату",
+        "ru": "🔄 Проверить оплату",
+    },
 
     # ── Ответ админа юзеру ──
     "admin_reply_to_user": {
@@ -315,16 +323,69 @@ ADMIN_SEND_ERROR_NO_TEXT_RU = "⚠️ Отправь текст, фото или
 ADMIN_SENT_OK_RU = "✅ Отправлено пользователю <code>{uid}</code>"
 ADMIN_SEND_FAIL_RU = "❌ Не удалось отправить пользователю. Возможно, он заблокировал бота.\n{e}"
 
-ADMIN_SERVICE_ADD_START_RU = "🆕 Добавление услуги\n\nВведи <b>ID услуги</b> латиницей без пробелов:"
-ADMIN_SERVICE_ADD_EMOJI_RU = "Введи эмодзи для услуги:"
-ADMIN_SERVICE_ADD_TITLE_RU = "Введи <b>название услуги</b>:"
-ADMIN_SERVICE_ADD_BUTTON_RU = "Введи <b>текст для кнопки</b>:\nНапример: {example}"
-ADMIN_SERVICE_ADD_SHORT_RU = "Введи короткое описание (1 строка):"
-ADMIN_SERVICE_ADD_TERMS_RU = "Введи <b>полные условия покупки</b> (HTML):"
-ADMIN_SERVICE_ADD_ID_SHORT_RU = "ID слишком короткий"
-ADMIN_SERVICE_ADD_ID_EXISTS_RU = "Такой ID уже существует"
-ADMIN_SERVICE_CREATED_RU = "✅ Услуга <b>{title}</b> создана!"
-ADMIN_SERVICE_UPDATED_RU = "✅ Условия для {title} обновлены"
+# ── Мастер добавления услуги (10 шагов: UA + RU) ──
+ADMIN_SERVICE_ADD_START_RU = (
+    "🆕 <b>Добавление услуги — шаг 1/10</b>\n\n"
+    "Введи <b>ID услуги</b> латиницей без пробелов:\n"
+    "<i>Например: confidential_docs</i>"
+)
+ADMIN_SERVICE_ADD_EMOJI_RU = "2/10 — Введи <b>эмодзи</b> для услуги:"
+ADMIN_SERVICE_ADD_TITLE_UA_RU = "3/10 — Название услуги <b>🇺🇦 UA</b>:"
+ADMIN_SERVICE_ADD_TITLE_RU_RU = (
+    "4/10 — Название услуги <b>🇷🇺 RU</b>:\n"
+    "<i>или отправь <code>=</code> чтобы скопировать украинский вариант</i>"
+)
+ADMIN_SERVICE_ADD_SHORT_UA_RU = "5/10 — Краткое описание <b>🇺🇦 UA</b> (1 строка):"
+ADMIN_SERVICE_ADD_SHORT_RU_RU = (
+    "6/10 — Краткое описание <b>🇷🇺 RU</b> (1 строка):\n"
+    "<i>или <code>=</code> чтобы скопировать UA</i>"
+)
+ADMIN_SERVICE_ADD_TERMS_UA_RU = "7/10 — <b>Условия покупки 🇺🇦 UA</b> (HTML):"
+ADMIN_SERVICE_ADD_TERMS_RU_RU = (
+    "8/10 — <b>Условия покупки 🇷🇺 RU</b> (HTML):\n"
+    "<i>или <code>=</code> чтобы скопировать UA</i>"
+)
+ADMIN_SERVICE_ADD_BUTTON_UA_RU = "9/10 — Текст кнопки <b>🇺🇦 UA</b>:\n<i>Например: {example}</i>"
+ADMIN_SERVICE_ADD_BUTTON_RU_RU = (
+    "10/10 — Текст кнопки <b>🇷🇺 RU</b>:\n"
+    "<i>Например: {example_ru} · или <code>=</code> чтобы скопировать UA</i>"
+)
+ADMIN_SERVICE_ADD_ID_SHORT_RU = "❌ ID слишком короткий (минимум 3 символа)"
+ADMIN_SERVICE_ADD_ID_EXISTS_RU = "❌ Такой ID уже существует"
+ADMIN_SERVICE_ADD_BUTTON_EXISTS_RU = "❌ Такая кнопка уже используется другой услугой. Придумай другой текст."
+ADMIN_SERVICE_ADD_EMPTY_RU = "❌ Текст не может быть пустым. Попробуй ещё раз."
+ADMIN_SERVICE_CREATED_RU = (
+    "✅ Услуга <b>{title}</b> создана на двух языках!\n\n"
+    "🇺🇦 {title_ua} — кнопка «{button_ua}»\n"
+    "🇷🇺 {title_ru} — кнопка «{button_ru}»"
+)
+ADMIN_SERVICE_UPDATED_RU = "✅ Поле <b>{field}</b> ({lang}) обновлено для «{title}»"
+ADMIN_SERVICE_COPIED_RU = "✅ Перевод скопирован: {source} → {target} для услуги «{title}»"
+
+# ── Точечная правка услуги ──
+ADMIN_SERVICE_EDIT_CHOOSE_LANG_RU = "✏️ <b>Редактирование:</b> {title}\n\nВыбери язык, который правим:"
+ADMIN_SERVICE_EDIT_CHOOSE_FIELD_RU = "✏️ <b>{title}</b> · язык <b>{lang}</b>\n\nЧто меняем?"
+ADMIN_SERVICE_EDIT_ASK_RU = (
+    "✏️ Введи новое значение для поля <b>{field}</b> ({lang}):\n\n"
+    "Сейчас:\n<code>{current}</code>\n\n"
+    "<i>Или /cancel для отмены</i>"
+)
+
+ADMIN_SERVICE_VIEW_RU_BILINGUAL = """{emoji} <b>{title_ua}</b> / <b>{title_ru}</b>
+
+ID: <code>{id}</code>
+Кнопка UA: {button_ua}
+Кнопка RU: {button_ru}
+Описание UA: {short_ua}
+Описание RU: {short_ru}
+
+Условия UA:
+{terms_ua}
+
+Условия RU:
+{terms_ru}
+
+Статус: {status}"""
 
 ADMIN_REQ_NO_RIGHTS_RU = "⛔ Нет прав администратора"
 

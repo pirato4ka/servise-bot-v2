@@ -234,9 +234,13 @@ async def service():
     await crud.create_service({
         "id": "test_service",
         "emoji": "🔒",
-        "title": "Тестовая услуга",
-        "button_label": "🔒 Тестовая услуга",
-        "short_desc": "Описание тестовой услуги",
-        "terms": "Условия тестовой услуги",
+        "title_ua": "Тестова послуга",
+        "title_ru": "Тестовая услуга",
+        "button_label_ua": "🔒 Тестова послуга",
+        "button_label_ru": "🔒 Тестовая услуга",
+        "short_desc_ua": "Опис тестової послуги",
+        "short_desc_ru": "Описание тестовой услуги",
+        "terms_ua": "Умови тестової послуги",
+        "terms_ru": "Условия тестовой услуги",
     })
     return await crud.get_service_by_id("test_service")

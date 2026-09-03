@@ -1,3 +1,5 @@
+import logging
+
 import aiosqlite
 
 from app.config import settings
@@ -22,10 +24,14 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS services (
     id TEXT PRIMARY KEY,
     emoji TEXT,
-    title TEXT NOT NULL,
-    button_label TEXT NOT NULL UNIQUE,
-    short_desc TEXT,
-    terms TEXT NOT NULL,
+    title_ua TEXT NOT NULL,
+    title_ru TEXT NOT NULL,
+    button_label_ua TEXT NOT NULL UNIQUE,
+    button_label_ru TEXT NOT NULL UNIQUE,
+    short_desc_ua TEXT,
+    short_desc_ru TEXT,
+    terms_ua TEXT NOT NULL,
+    terms_ru TEXT NOT NULL,
     is_active INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -117,6 +123,52 @@ async def _apply_pragmas(db: aiosqlite.Connection) -> None:
     await db.execute("PRAGMA foreign_keys=ON")
 
 
+SERVICES_BILINGUAL_SCHEMA = """
+CREATE TABLE IF NOT EXISTS services (
+    id TEXT PRIMARY KEY,
+    emoji TEXT,
+    title_ua TEXT NOT NULL,
+    title_ru TEXT NOT NULL,
+    button_label_ua TEXT NOT NULL UNIQUE,
+    button_label_ru TEXT NOT NULL UNIQUE,
+    short_desc_ua TEXT,
+    short_desc_ru TEXT,
+    terms_ua TEXT NOT NULL,
+    terms_ru TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+
+async def _migrate_services_to_bilingual(db: aiosqlite.Connection) -> None:
+    """
+    Старая таблица услуг была одноязычной (title, button_label, short_desc, terms).
+    Переливаем её в двуязычную: старые значения попадают сразу в UA и RU,
+    чтобы ничего не сломалось, а админ потом поправит перевод.
+    """
+    async with db.execute("PRAGMA table_info(services)") as cur:
+        columns = {row[1] for row in await cur.fetchall()}
+
+    if not columns or "title_ua" in columns:
+        return  # уже новая схема
+
+    await db.execute("ALTER TABLE services RENAME TO services_old")
+    await db.executescript(SERVICES_BILINGUAL_SCHEMA)
+    await db.execute("""
+        INSERT INTO services (id, emoji, title_ua, title_ru, button_label_ua, button_label_ru,
+                              short_desc_ua, short_desc_ru, terms_ua, terms_ru, is_active, created_at)
+        SELECT id, emoji, title, title, button_label, button_label, short_desc, short_desc,
+               terms, terms, is_active, created_at
+        FROM services_old
+    """)
+    await db.execute("DROP TABLE services_old")
+    await db.commit()
+    logging.getLogger(__name__).info(
+        "Миграция: услуги переведены на двуязычную схему (старые значения продублированы в UA и RU)"
+    )
+
+
 async def _add_missing_columns(db: aiosqlite.Connection) -> None:
     for table, column, ddl in COLUMN_MIGRATIONS:
         async with db.execute(f"PRAGMA table_info({table})") as cur:
@@ -134,6 +186,7 @@ async def init_db():
         await _apply_pragmas(db)
         await db.executescript(CREATE_TABLES)
         await db.commit()
+        await _migrate_services_to_bilingual(db)
         await _add_missing_columns(db)
 
 

@@ -19,6 +19,13 @@ from app.data.texts import (
 router = Router()
 
 
+def _service_title(service) -> str:
+    """Название услуги для админ-чата: русское, иначе украинское."""
+    if not service:
+        return "—"
+    return service["title_ru"] or service["title_ua"]
+
+
 async def _build_user_display(user_id: int) -> str:
     db = await get_db()
     async with db.execute("SELECT username, full_name FROM users WHERE user_id=?", (user_id,)) as cur:
@@ -184,7 +191,7 @@ async def price_input(message: Message, state: FSMContext):
     admin_msg_id = data["confirm_admin_msg_id"]
 
     service = await crud.get_service_by_id(service_id)
-    service_title = service["title"] if service else service_id
+    service_title = _service_title(service) if service else service_id
 
     await message.reply(ADMIN_INVOICE_CREATING_RU.format(amount=amount, asset=asset))
 
@@ -202,7 +209,7 @@ async def price_input(message: Message, state: FSMContext):
         # Юзеру
         lang = await crud.get_user_lang(user_id)
         user_text = t("invoice_created_user", lang).format(service_title=service_title, amount=amount, asset=asset)
-        kb_user = user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id)
+        kb_user = user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id, lang)
         await message.bot.send_message(chat_id=user_id, text=user_text, reply_markup=kb_user)
 
         # Админу
@@ -291,7 +298,7 @@ async def confirm_command(message: Message, state: FSMContext):
         return
 
     service = await crud.get_service_by_id(ticket["service_id"])
-    service_title = service["title"] if service else ticket["service_id"]
+    service_title = _service_title(service) if service else ticket["service_id"]
 
     await message.reply(ADMIN_INVOICE_CREATING_RU.format(amount=amount, asset=asset))
 
@@ -310,8 +317,11 @@ async def confirm_command(message: Message, state: FSMContext):
 
         lang = await crud.get_user_lang(ticket["user_id"])
         user_text = t("invoice_created_user", lang).format(service_title=service_title, amount=amount, asset=asset)
-        await message.bot.send_message(chat_id=ticket["user_id"], text=user_text,
-                                       reply_markup=user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id))
+        await message.bot.send_message(
+            chat_id=ticket["user_id"], text=user_text,
+            reply_markup=user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id,
+                                         await crud.get_user_lang(ticket["user_id"])),
+        )
 
         user_display = await _build_user_display(ticket["user_id"])
         await message.reply(ADMIN_INVOICE_CREATED_RU.format(

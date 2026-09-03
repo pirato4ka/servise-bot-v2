@@ -45,7 +45,8 @@ async def user_free_message(message: Message, state: FSMContext):
     service_row = await crud.get_service_by_id(
         (user_row["service_id"] if user_row and user_row["service_id"] else None) or ticket["service_id"] or "unknown"
     )
-    service_title = service_row["title"] if service_row else "Невідомо"
+    lang = await crud.get_user_lang(user_id)
+    service_title = (crud.localize_service(service_row, lang) or {}).get("title") or "Невідомо"
     custom_name = (user_row["custom_name"] if user_row and user_row["custom_name"] else None) or message.from_user.full_name
     username = f"@{message.from_user.username}" if message.from_user.username else "без username"
 

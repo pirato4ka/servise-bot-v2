@@ -2,17 +2,22 @@ from aiogram.fsm.state import StatesGroup, State
 
 
 class AddService(StatesGroup):
+    """Мастер добавления услуги: каждый текст заполняется на двух языках."""
     id = State()
     emoji = State()
-    title = State()
-    button_label = State()
-    short_desc = State()
-    terms = State()
+    title_ua = State()
+    title_ru = State()
+    short_ua = State()
+    short_ru = State()
+    terms_ua = State()
+    terms_ru = State()
+    button_ua = State()
+    button_ru = State()
 
 
 class EditService(StatesGroup):
-    field_choice = State()
-    new_value = State()
+    """Точечная правка одного поля услуги."""
+    value = State()
 
 
 class ConfirmPayment(StatesGroup):
