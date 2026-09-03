@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
@@ -19,7 +20,7 @@ from app.data.texts import (
 from app.keyboards.inline import admin_check_invoice_kb, user_invoice_kb
 from app.services.cryptopay import create_infinite_invoice
 from app.states.admin_states import AddService, ConfirmPayment
-from app.utils.telegram import answer_callback, cb_reply, cb_send
+from app.utils.telegram import answer_callback, cb_chat_id, cb_reply
 from app.utils.text import MESSAGE_LIMIT, esc, fit, format_amount
 
 router = Router()
@@ -58,6 +59,61 @@ def parse_price(text: str):
     return amount, asset
 
 
+async def _is_ticket_admin(cb: CallbackQuery) -> bool:
+    """Разрешаем нажимать кнопки заявки только из админ-чата либо админам из БД.
+
+    Раньше проверялся только ``cb.message.chat.id == ADMIN_CHAT_ID``. Если
+    Telegram отдал InaccessibleMessage (сообщение старше 48 ч или недоступное
+    боту) — ``cb_chat_id`` уводил проверку в личку админа, и кнопки заявки
+    любые отвечали «Недоступно».
+    """
+    if not cb.from_user:
+        return False
+    if cb_chat_id(cb) == settings.ADMIN_CHAT_ID:
+        return True
+    return await crud.is_admin(cb.from_user.id)
+
+
+def _admin_chat_fsm_key(state: FSMContext):
+    """Ключ FSM для ввода в админ-чате.
+
+    Для обычного колбека из группы ``state.key.chat_id`` уже равен
+    ``ADMIN_CHAT_ID``. Если же Telegram прислал InaccessibleMessage и aiogram
+    ключ построил по ``from_user`` (личка), всё равно пишем состояние под
+    админ-чатом: админ продолжает ввод именно там, где увидел кнопку.
+    """
+    return replace(state.key, chat_id=settings.ADMIN_CHAT_ID)
+
+
+async def _set_admin_fsm(state: FSMContext, new_state, data: dict) -> None:
+    """Сохраняет состояние/данные для админ-чата (обходя личку при InaccessibleMessage)."""
+    key = _admin_chat_fsm_key(state)
+    await state.storage.set_state(key, new_state)
+    await state.storage.set_data(key, data)
+
+
+async def _admin_ticket_cb_reply(cb: CallbackQuery, text: str, reply_markup=None) -> bool:
+    """Отвечает на кнопку заявки в админ-чате.
+
+    Если оригинальное сообщение кнопки ещё доступно — отвечаем в тот же тред.
+    Если сообщение недоступно/удалено (InaccessibleMessage), не уводим ответ в
+    личку: шлём новое сообщение прямо в админ-чат.
+    """
+    if cb.message and cb.message.chat.id == settings.ADMIN_CHAT_ID:
+        return await cb_reply(cb, text, reply_markup=reply_markup)
+
+    try:
+        await cb.bot.send_message(
+            chat_id=settings.ADMIN_CHAT_ID,
+            text=text,
+            reply_markup=reply_markup,
+        )
+        return True
+    except Exception as e:  # noqa: BLE001 — ответ на кнопку не должен ронять обработчик
+        logging.error(f"ADMIN_TICKET: не удалось ответить в админ-чат: {e}")
+        return False
+
+
 # ═══════════════════════════════════════
 #  /cancel — сброс FSM состояния
 # ═══════════════════════════════════════
@@ -77,7 +133,7 @@ async def admin_cancel(message: Message, state: FSMContext):
 async def ticket_confirm_start(cb: CallbackQuery, state: FSMContext):
     logging.info(f"🔴 CONFIRM: data={cb.data} chat={cb.message.chat.id if cb.message else '?'}")
 
-    if cb.message and cb.message.chat.id != settings.ADMIN_CHAT_ID:
+    if not await _is_ticket_admin(cb):
         await answer_callback(cb, "Недоступно", show_alert=True)
         return
 
@@ -86,7 +142,7 @@ async def ticket_confirm_start(cb: CallbackQuery, state: FSMContext):
     try:
         admin_msg_id = int(cb.data.split(":")[2])
     except (IndexError, ValueError):
-        await cb_send(cb, "❌ Некорректные данные кнопки")
+        await _admin_ticket_cb_reply(cb, "❌ Некорректные данные кнопки")
         return
 
     ticket = await crud.get_ticket_by_admin_msg(admin_msg_id)
@@ -95,26 +151,24 @@ async def ticket_confirm_start(cb: CallbackQuery, state: FSMContext):
         # приводил к подтверждению ЧУЖОЙ заявки с выставлением счета не тому
         # клиенту, поэтому fallback убран.
         logging.warning(f"CONFIRM: заявка по admin_message_id={admin_msg_id} не найдена")
-        await cb_reply(cb, f"❌ Заявка {admin_msg_id} не найдена")
+        await _admin_ticket_cb_reply(cb, f"❌ Заявка {admin_msg_id} не найдена")
         return
 
     if ticket["status"] != "open":
-        await cb_reply(cb, f"⚠️ Заявка уже обработана ({esc(ticket['status'])})")
+        await _admin_ticket_cb_reply(cb, f"⚠️ Заявка уже обработана ({esc(ticket['status'])})")
         return
 
-    # Сбрасываем предыдущее состояние
+    # Сбрасываем предыдущее состояние (и текущего чата, и админ-чата)
     await state.clear()
+    await _set_admin_fsm(state, ConfirmPayment.waiting_price, {
+        "confirm_admin_msg_id": ticket["admin_message_id"],
+        "confirm_ticket_id": ticket["id"],
+        "confirm_user_id": ticket["user_id"],
+        "confirm_service_id": ticket["service_id"],
+        "action": "confirm",
+    })
 
-    await state.set_state(ConfirmPayment.waiting_price)
-    await state.update_data(
-        confirm_admin_msg_id=ticket["admin_message_id"],
-        confirm_ticket_id=ticket["id"],
-        confirm_user_id=ticket["user_id"],
-        confirm_service_id=ticket["service_id"],
-        action="confirm"
-    )
-
-    await cb_reply(
+    await _admin_ticket_cb_reply(
         cb,
         ADMIN_ASK_PRICE_RU.format(user_id=ticket["user_id"]) + "\n<i>Или /cancel для отмены</i>"
     )
@@ -128,7 +182,7 @@ async def ticket_confirm_start(cb: CallbackQuery, state: FSMContext):
 async def ticket_decline_start(cb: CallbackQuery, state: FSMContext):
     logging.info(f"🔴 DECLINE: data={cb.data} chat={cb.message.chat.id if cb.message else '?'}")
 
-    if cb.message and cb.message.chat.id != settings.ADMIN_CHAT_ID:
+    if not await _is_ticket_admin(cb):
         await answer_callback(cb, "Недоступно", show_alert=True)
         return
 
@@ -137,30 +191,30 @@ async def ticket_decline_start(cb: CallbackQuery, state: FSMContext):
     try:
         admin_msg_id = int(cb.data.split(":")[2])
     except (IndexError, ValueError):
-        await cb_send(cb, "❌ Некорректные данные кнопки")
+        await _admin_ticket_cb_reply(cb, "❌ Некорректные данные кнопки")
         return
 
     ticket = await crud.get_ticket_by_admin_msg(admin_msg_id)
     if not ticket:
-        await cb_reply(cb, "❌ Заявка не найдена")
+        await _admin_ticket_cb_reply(cb, "❌ Заявка не найдена")
         return
 
     if ticket["status"] != "open":
-        await cb_reply(cb, f"⚠️ Заявка уже обработана ({esc(ticket['status'])})")
+        await _admin_ticket_cb_reply(cb, f"⚠️ Заявка уже обработана ({esc(ticket['status'])})")
         return
 
-    # Сбрасываем предыдущее состояние
+    # Сбрасываем предыдущее состояние (и текущего чата, и админ-чата)
     await state.clear()
+    await _set_admin_fsm(state, ConfirmPayment.waiting_decline_reason, {
+        "confirm_admin_msg_id": admin_msg_id,
+        "confirm_ticket_id": ticket["id"],
+        "confirm_user_id": ticket["user_id"],
+        "action": "decline",
+    })
 
-    await state.set_state(ConfirmPayment.waiting_decline_reason)
-    await state.update_data(
-        confirm_admin_msg_id=admin_msg_id,
-        confirm_ticket_id=ticket["id"],
-        confirm_user_id=ticket["user_id"],
-        action="decline"
+    await _admin_ticket_cb_reply(
+        cb, ADMIN_DECLINE_ASK_REASON_RU + "\n<i>Или /cancel для отмены</i>"
     )
-
-    await cb_reply(cb, ADMIN_DECLINE_ASK_REASON_RU + "\n<i>Или /cancel для отмены</i>")
 
 
 # ═══════════════════════════════════════
@@ -171,7 +225,6 @@ async def ticket_decline_start(cb: CallbackQuery, state: FSMContext):
     ConfirmPayment.waiting_price,  # Упрощенный синтаксис
     F.chat.id == settings.ADMIN_CHAT_ID,
     F.text,
-    ~F.reply_to_message
 )
 async def price_input(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -253,7 +306,6 @@ async def price_input(message: Message, state: FSMContext):
     ConfirmPayment.waiting_decline_reason,
     F.chat.id == settings.ADMIN_CHAT_ID,
     F.text,
-    ~F.reply_to_message
 )
 async def decline_reason_input(message: Message, state: FSMContext):
     data = await state.get_data()

@@ -1,6 +1,6 @@
 # Что исправлено
 
-Все изменения проверены тестами: `python -m pytest tests -q` → **93 passed**.
+Все изменения проверены тестами: `python -m pytest tests -q` → **96 passed**.
 Для прогона нужно окружение Python 3.11 (aiogram 3.7 не собирается на 3.13):
 
 ```bash
@@ -8,6 +8,45 @@ uv venv --python 3.11 .venv311
 uv pip install --python .venv311/bin/python -r requirements.txt -r requirements-dev.txt
 .venv311/bin/python -m pytest tests -q
 ```
+
+---
+
+## 11. Кнопки «Подтвердить заявку» / «Отклонить» (свежее)
+
+Симптом из обращения: в админ-чат приходит заявка с кнопками, а они «не
+работают». Две причины закрыты в `app/handlers/admin/confirm_payment.py`.
+
+### 11.1 Ответ админа, отправленный REPLY, уходил клиенту как обычный ответ
+
+Нажатие кнопки оставляло FSM в состоянии `waiting_price` /
+`waiting_decline_reason`. Обработчики ввода были отфильтрованы
+`~F.reply_to_message`, поэтому REPLY от админа не попадал в мастер заявки.
+Его перехватывал `reply_handler` и отправлял клиенту как «Відповідь від
+адміністрації»: цена не создавала инвойс, причина не отклоняла заявку, тикет
+оставался `open`. Внешне это выглядело как неработающие кнопки.
+
+Что стало:
+
+- поля `price_input` и `decline_reason_input` больше не исключают REPLY;
+- цена/причина принимаются и обычным сообщением, и ответом на заявку.
+
+### 11.2 Кнопка на недоступном сообщении не переводила мастер в админ-чат
+
+При `InaccessibleMessage` (или `message=None`) старая проверка
+`cb.message.chat.id` уводила проверку в личку админа, а `state` продолжала
+писать в ключ лички. Ответ «запрос цены/причины» мог уйти не в тот чат, и
+дальнейший ввод терялся.
+
+Что стало:
+
+- доступ к кнопке проверяется через `crud.is_admin()` (админ-чат или админ из
+  БД), а не только по `chat.id`;
+- FSM-состояние и ответ для заявки всегда пишутся в админ-чат
+  (`_admin_chat_fsm_key`, `_set_admin_fsm`, `_admin_ticket_cb_reply`).
+
+Тесты: `test_decline_reason_as_reply_is_processed_as_decline`,
+`test_confirm_price_as_reply_creates_invoice`,
+`test_ticket_buttons_survive_inaccessible_message`.
 
 ---
 
