@@ -1,11 +1,14 @@
 """Общая обвязка для тестов: временная БД, фейковая сессия Telegram, диспетчер."""
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
 import pytest
+from aiogram.client.default import Default
+from aiogram.exceptions import TelegramBadRequest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -21,7 +24,9 @@ os.environ["INVOICE_POLL_INTERVAL"] = "0"
 os.environ["DEBUG_ALL"] = "False"
 
 from aiogram import Bot  # noqa: E402
+from aiogram.client.default import DefaultBotProperties  # noqa: E402
 from aiogram.client.session.aiohttp import AiohttpSession  # noqa: E402
+from aiogram.enums import ParseMode  # noqa: E402
 from aiogram.types import (  # noqa: E402
     Chat, Message, Update, User, CallbackQuery, ChatMemberAdministrator,
     ChatMemberMember, ChatMemberLeft,
@@ -36,8 +41,29 @@ ADMIN_ID = 777000222
 ADMIN_CHAT_ID = settings.ADMIN_CHAT_ID
 
 
+# Разрешённые Telegram HTML-теги (https://core.telegram.org/bots/api#html-style)
+_ALLOWED_TAGS = re.compile(
+    r"</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|tg-spoiler|blockquote"
+    r"|span(?:\s+class=\"tg-spoiler\")?)\b[^>]*>"
+)
+_BAD_AMP = re.compile(r"&(?!(?:amp|lt|gt|quot|#\d+|#x[0-9a-fA-F]+);)")
+
+MESSAGE_LIMIT = 4096
+CAPTION_LIMIT = 1024
+
+
+class TelegramValidationError(AssertionError):
+    """То, что настоящий Telegram вернул бы как 400 Bad Request."""
+
+
 class FakeSession(AiohttpSession):
-    """Перехватывает все вызовы Telegram API и складывает их в self.calls."""
+    """
+    Перехватывает все вызовы Telegram API и складывает их в self.calls.
+
+    Заодно изображает строгость настоящего Telegram: проверяет HTML-разметку
+    и лимиты длины. Без этого тесты «зелёные», а в проде сообщение теряется
+    с ошибкой 400 — именно так в боте пропадали заявки клиентов.
+    """
 
     def __init__(self):
         super().__init__()
@@ -45,6 +71,59 @@ class FakeSession(AiohttpSession):
         self.message_id = 1000
         self.chat_admins = []          # ответ get_chat_administrators
         self.chat_member_status = {}   # user_id -> status
+
+    # ── валидация как у Telegram ──
+    @staticmethod
+    def _check_html(text: str, method_name: str) -> None:
+        if not text:
+            return
+        plain = _ALLOWED_TAGS.sub("", text)
+        if "<" in plain or ">" in plain:
+            raise TelegramBadRequest(
+                method=None,
+                message=f"{method_name}: can't parse entities: unexpected '<' in {plain[:60]!r}",
+            )
+        if _BAD_AMP.search(plain):
+            raise TelegramBadRequest(
+                method=None,
+                message=f"{method_name}: can't parse entities: bad '&'",
+            )
+
+    @staticmethod
+    def _parse_mode(bot, method):
+        """aiogram шлёт parse_mode как Default("parse_mode") — раскрываем в значение бота."""
+        value = getattr(method, "parse_mode", None)
+        if isinstance(value, Default):
+            value = bot.default[value.name]
+        return value
+
+    @classmethod
+    def _validate(cls, bot, method) -> None:
+        name = type(method).__name__
+        html_mode = cls._parse_mode(bot, method) == "HTML"
+
+        text = getattr(method, "text", None)
+        caption = getattr(method, "caption", None)
+
+        if name == "SendMessage":
+            if html_mode:
+                cls._check_html(text, name)
+            if text and len(text) > MESSAGE_LIMIT:
+                raise TelegramBadRequest(method=None, message=f"{name}: message is too long")
+        elif name in ("EditMessageText",):
+            if html_mode:
+                cls._check_html(text, name)
+            if text and len(text) > MESSAGE_LIMIT:
+                raise TelegramBadRequest(method=None, message=f"{name}: message is too long")
+        elif name in ("SendPhoto", "SendDocument", "SendVoice", "SendAudio", "SendVideo"):
+            if html_mode:
+                cls._check_html(caption, name)
+            if caption and len(caption) > CAPTION_LIMIT:
+                raise TelegramBadRequest(method=None, message=f"{name}: caption is too long")
+        elif name == "AnswerCallbackQuery":
+            # Текст алерта показывается как есть, без разметки
+            if text and len(text) > 200:
+                raise TelegramBadRequest(method=None, message=f"{name}: text is too long")
 
     # ── helpers ──
     @property
@@ -75,6 +154,7 @@ class FakeSession(AiohttpSession):
 
     # ── Telegram API ──
     async def make_request(self, bot, method, timeout=None):
+        self._validate(bot, method)
         self.calls.append(method)
         name = type(method).__name__
 
@@ -114,8 +194,12 @@ class FakeSession(AiohttpSession):
 
 
 def make_bot() -> Bot:
-    bot = Bot(token=settings.BOT_TOKEN, session=FakeSession())
-    return bot
+    """Бот ровно как в проде: с parse_mode=HTML по умолчанию (см. app/bot.py)."""
+    return Bot(
+        token=settings.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        session=FakeSession(),
+    )
 
 
 def user(id_: int = USER_ID, first_name: str = "Тест", username: str = "tester") -> User:
@@ -217,6 +301,16 @@ def bot():
 def dp():
     """Роутеры — синглтоны уровня модуля, поэтому диспетчер создаём один раз на прогон."""
     return build_dispatcher()
+
+
+@pytest.fixture(autouse=True)
+def _reset_throttling():
+    """Счётчики антифлуда общие на процесс — между тестами их обнуляем."""
+    from app.handlers.user_chat import throttling
+
+    throttling.reset()
+    yield
+    throttling.reset()
 
 
 @pytest.fixture(autouse=True)

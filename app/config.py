@@ -1,5 +1,6 @@
-from pydantic_settings import BaseSettings
 from typing import Optional
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -16,9 +17,13 @@ class Settings(BaseSettings):
     # Логировать все входящие апдейты (отладочный роутер). В проде держим выключенным.
     DEBUG_ALL: bool = False
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # pydantic v2: class Config устарел и давал DeprecationWarning при старте.
+    # extra="ignore" — чтобы лишние переменные в .env не роняли бота.
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()

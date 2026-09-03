@@ -7,6 +7,7 @@ from aiogram.filters import ChatMemberUpdatedFilter, IS_NOT_MEMBER, IS_MEMBER
 from app.config import settings
 from app.database import crud
 from app.data.texts import ADMIN_NEW_ADMIN_RU, ADMIN_REMOVE_ADMIN_RU
+from app.utils.text import esc
 
 router = Router()
 
@@ -58,11 +59,12 @@ async def sync_chat_admins(bot: Bot) -> tuple[int, int]:
 
 @router.message(F.chat.id == settings.ADMIN_CHAT_ID, F.new_chat_members)
 async def new_members_in_admin_chat(message: Message):
+    added_by = message.from_user.id if message.from_user else None
     for user in message.new_chat_members:
         if user.is_bot:
             continue
-        await crud.add_admin(user.id, added_by=message.from_user.id)
-        await message.answer(ADMIN_NEW_ADMIN_RU.format(name=user.full_name, uid=user.id))
+        await crud.add_admin(user.id, added_by=added_by)
+        await message.answer(ADMIN_NEW_ADMIN_RU.format(name=esc(user.full_name), uid=user.id))
 
 
 @router.message(F.chat.id == settings.ADMIN_CHAT_ID, F.left_chat_member)
@@ -70,7 +72,7 @@ async def left_member(message: Message):
     user = message.left_chat_member
     if user:
         await crud.remove_admin(user.id)
-        await message.answer(ADMIN_REMOVE_ADMIN_RU.format(name=user.full_name))
+        await message.answer(ADMIN_REMOVE_ADMIN_RU.format(name=esc(user.full_name)))
 
 
 @router.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER), F.chat.id == settings.ADMIN_CHAT_ID)
@@ -88,7 +90,9 @@ async def member_left(event: ChatMemberUpdated):
 @router.message(F.chat.id == settings.ADMIN_CHAT_ID, ~F.reply_to_message)
 async def auto_register_admin_on_message(message: Message):
     """Пишущий в админ-чат получает права автоматически (кроме служебных сообщений)."""
-    if message.from_user and message.from_user.is_bot:
+    # from_user отсутствует у постов из привязанного канала и части
+    # сервисных сообщений — на них раньше падал AttributeError.
+    if not message.from_user or message.from_user.is_bot:
         return
     if any(getattr(message, field, None) for field in ("pinned_message", "new_chat_members", "left_chat_member")):
         return

@@ -1,12 +1,18 @@
 import logging
 import re
 
-from aiogram import Router, F
+from aiogram import F, Router
 from aiogram.types import Message
 
 from app.config import settings
 from app.database import crud
-from app.data.texts import t, ADMIN_SEND_ERROR_NO_TEXT_RU, ADMIN_SENT_OK_RU, ADMIN_SEND_FAIL_RU
+from app.data.texts import (
+    ADMIN_SEND_ERROR_NO_TEXT_RU,
+    ADMIN_SEND_FAIL_RU,
+    ADMIN_SENT_OK_RU,
+    t,
+)
+from app.utils.text import CAPTION_LIMIT, MESSAGE_LIMIT, esc, fit, strip_tags
 
 router = Router()
 router.message.filter(F.chat.id == settings.ADMIN_CHAT_ID, F.reply_to_message)
@@ -52,6 +58,8 @@ async def _find_user_id_from_message(msg) -> int | None:
         return None
 
     text = msg.text or msg.caption or ""
+    if not text:
+        return None
 
     # Способ 1: через entities (code-блоки содержат user_id)
     entities = msg.entities or msg.caption_entities or []
@@ -61,13 +69,17 @@ async def _find_user_id_from_message(msg) -> int | None:
             if code_text.isdigit() and len(code_text) >= 5:
                 return int(code_text)
 
+    # Шаблоны бота оборачивают ID в <code>, поэтому regex применяем к тексту
+    # без разметки — иначе «🆔 <code>555000111</code>» не находилось.
+    plain = strip_tags(text)
+
     # Способ 2: regex по чистому тексту (ищем число 5+ цифр после 🆔)
-    m = re.search(r"🆔\s*(\d{5,})", text)
+    m = re.search(r"🆔\s*(\d{5,})", plain)
     if m:
         return int(m.group(1))
 
     # Способ 3: просто первое длинное число
-    m = re.search(r"(\d{7,})", text)
+    m = re.search(r"(\d{7,})", plain)
     if m:
         return int(m.group(1))
 
@@ -98,6 +110,20 @@ async def _resolve_ticket(message: Message):
     return None
 
 
+async def _deliver_media(message: Message, user_id: int, body: str, lang: str, send) -> None:
+    """
+    Отправляет медиа пользователю вместе с текстом ответа.
+
+    Подпись Telegram ограничена 1024 символами: длинный ответ админа раньше
+    давал 400 «caption is too long», и клиент не получал ни фото, ни текст.
+    """
+    if len(body) <= CAPTION_LIMIT:
+        await send(caption=body)
+        return
+    await send(caption=t("admin_media_reply", lang))
+    await message.bot.send_message(chat_id=user_id, text=body)
+
+
 @router.message()
 async def admin_reply(message: Message):
     # Закрепление, вход/выход участников и прочие служебные события не должны
@@ -123,29 +149,40 @@ async def admin_reply(message: Message):
 
     try:
         await crud.log_message(user_id, ticket["id"], "admin_to_user", admin_text)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning(f"REPLY_HANDLER: не удалось записать сообщение в лог: {e}")
 
     try:
         lang = await crud.get_user_lang(user_id)
-        reply_text = t("admin_reply_to_user", lang)
+        reply_template = t("admin_reply_to_user", lang)
+        # Текст админа — это данные, а не разметка: экранируем и укладываем
+        # в лимит Telegram, иначе «скидка < 10%» теряла весь ответ.
+        placeholder = esc(admin_text) if admin_text.strip() else "📎"
+        body = fit(reply_template, MESSAGE_LIMIT, admin_text=placeholder)
 
         if message.text:
-            await message.bot.send_message(
-                chat_id=user_id,
-                text=reply_text.format(admin_text=admin_text)
-            )
+            await message.bot.send_message(chat_id=user_id, text=body)
         elif message.photo:
-            caption = reply_text.format(admin_text=admin_text) if admin_text else (
-                "💬 " + ("Відповідь від адміністрації" if lang == "ua" else "Ответ от администрации")
+            await _deliver_media(
+                message, user_id, body, lang,
+                lambda **kw: message.bot.send_photo(
+                    chat_id=user_id, photo=message.photo[-1].file_id, **kw
+                ),
             )
-            await message.bot.send_photo(chat_id=user_id, photo=message.photo[-1].file_id, caption=caption)
         elif message.document:
-            await message.bot.send_document(chat_id=user_id, document=message.document.file_id, caption=admin_text)
+            await _deliver_media(
+                message, user_id, body, lang,
+                lambda **kw: message.bot.send_document(
+                    chat_id=user_id, document=message.document.file_id, **kw
+                ),
+            )
         elif message.voice:
-            await message.bot.send_voice(chat_id=user_id, voice=message.voice.file_id)
-            if admin_text:
-                await message.bot.send_message(chat_id=user_id, text=reply_text.format(admin_text=admin_text))
+            await _deliver_media(
+                message, user_id, body, lang,
+                lambda **kw: message.bot.send_voice(
+                    chat_id=user_id, voice=message.voice.file_id, **kw
+                ),
+            )
 
         # Запоминаем ответ админа, чтобы reply на reply тоже находил заявку
         await crud.link_admin_message(message.message_id, ticket["id"], reply_to_id)
@@ -155,4 +192,4 @@ async def admin_reply(message: Message):
 
     except Exception as e:
         logging.error(f"REPLY_HANDLER: send error: {e}")
-        await message.reply(ADMIN_SEND_FAIL_RU.format(e=e))
+        await message.reply(fit(ADMIN_SEND_FAIL_RU, MESSAGE_LIMIT, e=esc(e)))

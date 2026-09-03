@@ -1,4 +1,6 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from app.utils.text import BUTTON_LIMIT
 
 
 def get_lang_keyboard():
@@ -39,7 +41,9 @@ def services_list_kb(services):
         title_ua = s.get("title_ua") or title_ru
         label = f"{'🟢' if s['is_active'] else '🔴'} {title_ua} / {title_ru}" if title_ua != title_ru \
             else f"{'🟢' if s['is_active'] else '🔴'} {title_ru}"
-        kb.append([InlineKeyboardButton(text=label, callback_data=f"svc:view:{s['id']}")])
+        # Текст inline-кнопки тоже ограничен 64 символами: длинное название
+        # услуги роняло всю админ-панель на «BUTTON_TEXT_INVALID».
+        kb.append([InlineKeyboardButton(text=label[:BUTTON_LIMIT], callback_data=f"svc:view:{s['id']}")])
     kb.append([InlineKeyboardButton(text="➕ Добавить услугу", callback_data="svc:add")])
     kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin:panel")])
     return InlineKeyboardMarkup(inline_keyboard=kb)

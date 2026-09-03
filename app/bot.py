@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
@@ -21,11 +22,17 @@ logging.basicConfig(
 )
 
 
+def mask_url(url: str) -> str:
+    """Прячет логин/пароль прокси перед тем, как писать URL в лог."""
+    return re.sub(r"://([^:/@]+):([^@/]+)@", r"://\1:***@", url or "")
+
+
 def build_session() -> AiohttpSession:
     """Сессия с опциональным прокси (http/https/socks — socks требует aiohttp_socks)."""
     proxy_url = settings.PROXY_URL
     if proxy_url:
-        logging.info(f"Использую прокси для Telegram: {proxy_url}")
+        # В логе не должно быть паролей: прокси часто вида socks5://user:pass@host
+        logging.info(f"Использую прокси для Telegram: {mask_url(proxy_url)}")
         return AiohttpSession(proxy=proxy_url)
     return AiohttpSession()
 
@@ -100,9 +107,18 @@ async def main():
         watcher_task.cancel()
         try:
             await watcher_task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
-        await broadcast.stop_all_broadcasts()
+        except Exception as e:
+            # Отменённую задачу глотаем, а реальную ошибку — показываем:
+            # прежний `except (CancelledError, Exception)` прятал и то, и другое.
+            logging.error(f"Ошибка при остановке invoice_watcher: {e}")
+
+        try:
+            await broadcast.stop_all_broadcasts()
+        except Exception as e:
+            logging.error(f"Ошибка при остановке рассылок: {e}")
+
         await bot.session.close()
 
 

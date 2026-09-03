@@ -1,27 +1,38 @@
 import logging
 
-from aiogram import Router, F
-from aiogram.types import Message
+from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
 
 from app.config import settings
 from app.database import crud
-from app.data.texts import USER_CONTINUATION_TEMPLATE_RU
+from app.data.texts import USER_CONTINUATION_TEMPLATE_RU, USER_MEDIA_CAPTION_RU, t
+from app.middlewares.throttling import ThrottlingMiddleware
+from app.utils.text import CAPTION_LIMIT, MESSAGE_LIMIT, esc, fit
 
 router = Router()
+
+# Антифлуд: каждое свободное сообщение клиента пересылается в админ-чат,
+# поэтому поток сообщений от одного пользователя ограничиваем именно здесь.
+# Анкета, кнопки услуг и админ-чат не затрагиваются.
+throttling = ThrottlingMiddleware()
+router.message.middleware(throttling)
 
 
 @router.message(F.chat.type == "private", ~F.text.startswith("/"))
 async def user_free_message(message: Message, state: FSMContext):
     """Любое сообщение пользователя после анкеты улетает в админ-чат в тред заявки."""
+    if not message.from_user:  # анонимные/служебные сообщения
+        return
+
     user_id = message.from_user.id
 
     if await state.get_state() is not None:
         return
 
-    # Нажатие кнопки услуги — обрабатывается другим роутером
+    # Нажатие кнопки услуги (в том числе выключенной) — обрабатывается другим роутером
     if message.text:
-        svc = await crud.get_service_by_button(message.text)
+        svc = await crud.get_service_by_button(message.text, active_only=False)
         if svc:
             return
 
@@ -65,41 +76,44 @@ async def user_free_message(message: Message, state: FSMContext):
     if message.reply_to_message:
         reply_note = "↩️ <b>(Відповідь на повідомлення адміністрації)</b>\n\n"
 
-    admin_text = reply_note + USER_CONTINUATION_TEMPLATE_RU.format(
-        name=custom_name,
-        user_id=user_id,
-        username=username,
-        service_title=service_title,
-        text=text_content[:1000],
+    # Всё, что пришло от пользователя, экранируется: parse_mode=HTML, и один
+    # символ «<» в тексте клиента раньше ронял отправку — сообщение терялось.
+    template_values = {
+        "name": esc(custom_name),
+        "user_id": user_id,
+        "username": esc(username),
+        "service_title": esc(service_title),
+    }
+    admin_text = fit(
+        reply_note + USER_CONTINUATION_TEMPLATE_RU,
+        MESSAGE_LIMIT,
+        text=esc(text_content),
+        **template_values,
     )
-
     reply_to = ticket["admin_message_id"] or None
 
+    sent_ids: list[int] = []
     try:
         if message.photo:
-            sent = await message.bot.send_photo(
-                chat_id=settings.ADMIN_CHAT_ID,
-                photo=message.photo[-1].file_id,
-                caption=admin_text,
-                reply_to_message_id=reply_to,
+            sent_ids += await _send_media(
+                message, admin_text, reply_to, template_values,
+                send=lambda **kw: message.bot.send_photo(
+                    chat_id=settings.ADMIN_CHAT_ID, photo=message.photo[-1].file_id, **kw
+                ),
             )
         elif message.document:
-            sent = await message.bot.send_document(
-                chat_id=settings.ADMIN_CHAT_ID,
-                document=message.document.file_id,
-                caption=admin_text,
-                reply_to_message_id=reply_to,
+            sent_ids += await _send_media(
+                message, admin_text, reply_to, template_values,
+                send=lambda **kw: message.bot.send_document(
+                    chat_id=settings.ADMIN_CHAT_ID, document=message.document.file_id, **kw
+                ),
             )
         elif message.voice:
-            sent = await message.bot.send_voice(
-                chat_id=settings.ADMIN_CHAT_ID,
-                voice=message.voice.file_id,
-                reply_to_message_id=reply_to,
-            )
-            await message.bot.send_message(
-                chat_id=settings.ADMIN_CHAT_ID,
-                text=admin_text,
-                reply_to_message_id=reply_to,
+            sent_ids += await _send_media(
+                message, admin_text, reply_to, template_values,
+                send=lambda **kw: message.bot.send_voice(
+                    chat_id=settings.ADMIN_CHAT_ID, voice=message.voice.file_id, **kw
+                ),
             )
         else:
             sent = await message.bot.send_message(
@@ -107,10 +121,12 @@ async def user_free_message(message: Message, state: FSMContext):
                 text=admin_text,
                 reply_to_message_id=reply_to,
             )
+            sent_ids.append(sent.message_id)
 
         # Запоминаем связь, чтобы админ мог ответить REPLY и на это сообщение
         if ticket["id"]:
-            await crud.link_admin_message(sent.message_id, ticket["id"], reply_to)
+            for message_id in sent_ids:
+                await crud.link_admin_message(message_id, ticket["id"], reply_to)
         await crud.log_message(user_id, ticket["id"] or 0, "user_to_admin", text_content)
 
     except Exception as e:
@@ -118,7 +134,38 @@ async def user_free_message(message: Message, state: FSMContext):
         try:
             await message.bot.send_message(
                 chat_id=settings.ADMIN_CHAT_ID,
-                text=admin_text + f"\n\n⚠️ Помилка reply: {e}",
+                # admin_text уже собран (и может содержать фигурные скобки
+                # из текста клиента) — поэтому конкатенация, а не .format()
+                text=fit(admin_text + "\n\n⚠️ Помилка reply: " + esc(e), MESSAGE_LIMIT),
             )
-        except Exception:
-            pass
+        except Exception as inner:
+            # В админ-чат не уходит вообще ничего — говорим об этом клиенту,
+            # иначе он будет ждать ответа, которого не существует.
+            logging.error(f"USER_CHAT: fallback тоже не удался: {inner}")
+            try:
+                await message.answer(t("ticket_send_error", lang))
+            except Exception as notify_error:
+                logging.error(f"USER_CHAT: не удалось предупредить клиента: {notify_error}")
+
+
+async def _send_media(message: Message, admin_text: str, reply_to,
+                      template_values: dict, send) -> list[int]:
+    """
+    Шлёт медиа в админ-чат.
+
+    Подпись Telegram ограничена 1024 символами, а полный шаблон с текстом
+    клиента легко её превышает. Раньше это давало 400 «caption is too long»,
+    и медиа терялось целиком. Теперь: если текст влезает — шлём одной
+    подписью, иначе короткая шапка на медиа + полный текст отдельным
+    сообщением в тот же тред.
+    """
+    if len(admin_text) <= CAPTION_LIMIT:
+        sent = await send(caption=admin_text, reply_to_message_id=reply_to)
+        return [sent.message_id]
+
+    short_caption = fit(USER_MEDIA_CAPTION_RU, CAPTION_LIMIT, **template_values)
+    sent = await send(caption=short_caption, reply_to_message_id=reply_to)
+    follow_up = await message.bot.send_message(
+        chat_id=settings.ADMIN_CHAT_ID, text=admin_text, reply_to_message_id=reply_to
+    )
+    return [sent.message_id, follow_up.message_id]

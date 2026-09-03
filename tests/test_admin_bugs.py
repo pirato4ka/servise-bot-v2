@@ -261,7 +261,12 @@ def _paid_invoice(amount="100", asset="USDT"):
 def paid_api(monkeypatch):
     async def _get_invoice_status(invoice_id):
         return _paid_invoice()
+
+    async def _get_invoices_statuses(invoice_ids):
+        return {int(i): _paid_invoice() for i in invoice_ids}
+
     monkeypatch.setattr(payment_check, "get_invoice_status", _get_invoice_status)
+    monkeypatch.setattr(cryptopay, "get_invoices_statuses", _get_invoices_statuses)
 
 
 async def test_invoice_applied_once(dp, bot, service, paid_api):

@@ -1,5 +1,7 @@
 from typing import Optional
 
+from app.utils.text import BUTTON_LIMIT
+
 from .db import get_db
 
 # USERS
@@ -75,6 +77,8 @@ def localize_service(service, lang: str = "ua") -> dict | None:
 
 
 async def get_service_by_id(sid: str):
+    """По ID услугу ищем независимо от статуса: по выключенной услуге могут
+    остаться открытые заявки и счета, которые надо показывать админу."""
     db = await get_db()
     try:
         async with db.execute("SELECT * FROM services WHERE id=?", (sid,)) as cur:
@@ -84,15 +88,37 @@ async def get_service_by_id(sid: str):
         await db.close()
 
 
-async def get_service_by_button(label: str):
-    """Кнопка может быть на любом языке — ищем по обеим колонкам."""
+async def get_service_by_button(label: str, active_only: bool = True):
+    """
+    Кнопка может быть на любом языке — ищем по обеим колонкам.
+
+    По умолчанию только активные: раньше выключение услуги в админке ничего
+    не меняло для тех, у кого старая клавиатура ещё открыта.
+    """
     db = await get_db()
     try:
-        async with db.execute(
-            "SELECT * FROM services WHERE button_label_ua=? OR button_label_ru=?", (label, label)
-        ) as cur:
+        query = "SELECT * FROM services WHERE (button_label_ua=? OR button_label_ru=?)"
+        if active_only:
+            query += " AND is_active=1"
+        async with db.execute(query, (label, label)) as cur:
             row = await cur.fetchone()
-        return row
+        if row:
+            return row
+
+        # Страховка для меток длиннее лимита Telegram: в клавиатуре они
+        # урезаются до BUTTON_LIMIT символов, поэтому сравниваем префикс.
+        if len(label) == BUTTON_LIMIT:
+            prefix_query = (
+                "SELECT * FROM services WHERE "
+                "(substr(button_label_ua, 1, ?)=? OR substr(button_label_ru, 1, ?)=?)"
+            )
+            if active_only:
+                prefix_query += " AND is_active=1"
+            async with db.execute(
+                prefix_query, (BUTTON_LIMIT, label, BUTTON_LIMIT, label)
+            ) as cur:
+                return await cur.fetchone()
+        return None
     finally:
         await db.close()
 
@@ -239,6 +265,18 @@ async def get_open_ticket_by_user(user_id: int):
         async with db.execute("SELECT * FROM tickets WHERE user_id=? AND status='open' ORDER BY id DESC LIMIT 1", (user_id,)) as cur:
             row = await cur.fetchone()
         return row
+    finally:
+        await db.close()
+
+
+async def get_last_open_ticket():
+    """Последняя открытая заявка по всем пользователям — для /confirm <цена> <актив>."""
+    db = await get_db()
+    try:
+        async with db.execute(
+            "SELECT * FROM tickets WHERE status='open' ORDER BY id DESC LIMIT 1"
+        ) as cur:
+            return await cur.fetchone()
     finally:
         await db.close()
 
@@ -407,16 +445,41 @@ async def get_pending_invoices(limit: int = 50):
 
 
 async def mark_invoice_paid(crypto_id: int) -> Optional[dict]:
-    """Отмечаем счёт оплаченным и закрываем заявку. Возвращает запись счёта (или None)."""
-    record = await get_invoice_by_crypto_id(crypto_id)
-    if not record:
-        return None
-    if record["status"] == "paid":
-        return None
-    await update_invoice_status(crypto_id, "paid")
-    if record["ticket_id"]:
-        await set_ticket_status(record["ticket_id"], "paid")
-    return dict(record)
+    """
+    Отмечаем счёт оплаченным и закрываем заявку. Возвращает запись счёта
+    только тому, кто реально перевёл статус (иначе None).
+
+    Статус меняется одним условным UPDATE: оплата приходит одновременно
+    из фонового вотчера и по кнопке «Проверить оплату», и прежняя схема
+    «прочитали -> сравнили -> записали» успевала отработать дважды —
+    пользователь и админ-чат получали дубли уведомлений.
+    """
+    db = await get_db()
+    try:
+        async with db.execute("SELECT * FROM invoices WHERE crypto_invoice_id=?", (crypto_id,)) as cur:
+            row = await cur.fetchone()
+        if not row:
+            return None
+        record = dict(row)
+        if record["status"] == "paid":
+            return None
+
+        cur = await db.execute(
+            "UPDATE invoices SET status='paid' WHERE crypto_invoice_id=? AND status<>'paid'",
+            (crypto_id,),
+        )
+        await db.commit()
+        if cur.rowcount == 0:
+            return None  # нас опередил параллельный вызов
+
+        if record["ticket_id"]:
+            await db.execute("UPDATE tickets SET status='paid' WHERE id=?", (record["ticket_id"],))
+            await db.commit()
+    finally:
+        await db.close()
+
+    record["status"] = "paid"
+    return record
 
 
 # LANG
@@ -431,9 +494,20 @@ async def get_user_lang(user_id: int) -> str:
 
 
 async def set_user_lang(user_id: int, lang: str):
+    """
+    Сохраняет язык пользователя.
+
+    Именно INSERT ... ON CONFLICT: прежний голый UPDATE молча ничего не делал,
+    если строки пользователя не было (свежая/потерянная база, кнопка языка
+    на старом сообщении) — и бот вечно переспрашивал язык.
+    """
     db = await get_db()
     try:
-        await db.execute("UPDATE users SET lang=? WHERE user_id=?", (lang, user_id))
+        await db.execute(
+            "INSERT INTO users (user_id, lang, last_active) VALUES (?,?,CURRENT_TIMESTAMP) "
+            "ON CONFLICT(user_id) DO UPDATE SET lang=excluded.lang, last_active=CURRENT_TIMESTAMP",
+            (user_id, lang),
+        )
         await db.commit()
     finally:
         await db.close()
@@ -601,7 +675,13 @@ async def get_stats():
     try:
         async with db.execute("SELECT COUNT(*) FROM users") as cur:
             total = (await cur.fetchone())[0]
-        async with db.execute("SELECT COUNT(*) FROM users WHERE date(first_seen)=date('now')") as cur:
+        # first_seen пишется в UTC (CURRENT_TIMESTAMP), поэтому и «сегодня»
+        # считаем в локальном времени сервера — иначе счётчик обнулялся
+        # не в полночь по Киеву, а в 00:00 UTC (03:00 зимой).
+        async with db.execute(
+            "SELECT COUNT(*) FROM users "
+            "WHERE date(first_seen,'localtime')=date('now','localtime')"
+        ) as cur:
             today = (await cur.fetchone())[0]
         async with db.execute("SELECT COUNT(*) FROM tickets WHERE status='open'") as cur:
             open_t = (await cur.fetchone())[0]

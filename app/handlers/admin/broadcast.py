@@ -11,6 +11,8 @@ from aiogram.filters import Command, StateFilter
 from app.config import settings
 from app.database import crud
 from app.states.admin_states import Broadcast
+from app.utils.telegram import cb_send
+from app.utils.text import MESSAGE_LIMIT, esc, fit, strip_tags, truncate
 
 router = Router()
 
@@ -59,7 +61,8 @@ async def broadcast_start(cb: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(Broadcast.waiting_interval)
 
-    await cb.message.answer(
+    await cb_send(
+        cb,
         "📢 <b>Настройка рассылки</b>\n\n"
         "Укажите <b>периодичность</b> в часах:\n"
         "• <code>24</code> — раз в сутки\n"
@@ -223,7 +226,7 @@ async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
 
     data = await state.get_data()
     if not data.get("broadcast_text") or data.get("interval_hours") is None:
-        await cb.message.answer("❌ Данные рассылки устарели или потеряны. Начните настройку заново.")
+        await cb_send(cb, "❌ Данные рассылки устарели или потеряны. Начните настройку заново.")
         await state.clear()
         return
 
@@ -233,7 +236,7 @@ async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
 
     broadcast_id = await crud.create_broadcast(cb.from_user.id, interval, text, photo_id)
     if not broadcast_id:
-        await cb.message.answer("❌ Ошибка сохранения в базу данных. Попробуйте снова.")
+        await cb_send(cb, "❌ Ошибка сохранения в базу данных. Попробуйте снова.")
         await state.clear()
         return
 
@@ -242,10 +245,11 @@ async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
     task = asyncio.create_task(broadcast_loop(cb.bot, broadcast_id, interval_hours=interval, initial_delay=0))
     active_tasks[broadcast_id] = task
 
-    await cb.message.answer(
+    await cb_send(
+        cb,
         f"🚀 <b>Рассылка #{broadcast_id} запущена!</b>\n\n"
         f"⏰ Каждые {interval} ч.\n"
-        f"📨 Первая отправка через {interval} ч.\n\n"
+        f"📨 Первая отправка — прямо сейчас.\n\n"
         f"🛑 Остановить: /stopbroadcast {broadcast_id}\n"
         f"📋 Список всех: /broadcasts"
     )
@@ -256,21 +260,26 @@ async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
 async def broadcast_cancel_cb(cb: CallbackQuery, state: FSMContext):
     await cb.answer("Отменено")
     await state.clear()
-    await cb.message.answer("❌ Настройка рассылки отменена.")
+    await cb_send(cb, "❌ Настройка рассылки отменена.")
 
 
 # ═══════════════════════════════════════
 #  Отправка
 # ═══════════════════════════════════════
 
+def _is_parse_error(message: str) -> bool:
+    return "parse entities" in message.lower() or "unsupported parse mode" in message.lower()
+
+
 async def _send_one(bot: Bot, uid: int, text: str, photo_id: str | None) -> str:
     """Отправляет одно сообщение, аккуратно переживая лимиты Telegram."""
+    parse_mode: str | None = "HTML"
     for attempt in range(3):
         try:
             if photo_id:
-                await bot.send_photo(chat_id=uid, photo=photo_id, caption=text, parse_mode="HTML")
+                await bot.send_photo(chat_id=uid, photo=photo_id, caption=text, parse_mode=parse_mode)
             else:
-                await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+                await bot.send_message(chat_id=uid, text=text, parse_mode=parse_mode)
             return "sent"
         except TelegramRetryAfter as e:
             await asyncio.sleep(float(getattr(e, "retry_after", 1)) + 0.5)
@@ -278,10 +287,18 @@ async def _send_one(bot: Bot, uid: int, text: str, photo_id: str | None) -> str:
             err = str(e).lower()
             if "blocked" in err or "deactivated" in err or "not found" in err or "chat not found" in err:
                 return "blocked"
+            if _is_parse_error(err):
+                # Админ оставил в тексте «<» или незакрытый тег. Раньше это
+                # давало 400 каждому получателю — рассылка не доходила ни до
+                # кого. Шлём тем же текстом, но без разметки.
+                logging.warning(f"📢 Рассылка: битый HTML у {uid}, отправляю без разметки ({e})")
+                parse_mode = None
+                continue
             if attempt == 2:
                 return "failed"
             await asyncio.sleep(1)
-        except Exception:
+        except Exception as e:
+            logging.warning(f"📢 Рассылка: ошибка отправки {uid}: {e}")
             if attempt == 2:
                 return "failed"
             await asyncio.sleep(1)
@@ -352,7 +369,17 @@ async def broadcast_loop(
             current_text = row["text"] or text
             current_photo = row["photo_file_id"] if row["photo_file_id"] is not None else photo_id
 
-            await run_broadcast(bot, broadcast_id, current_text, current_photo)
+            try:
+                await run_broadcast(bot, broadcast_id, current_text, current_photo)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                # Одна неудачная итерация не должна убивать регулярную рассылку:
+                # раньше исключение здесь завершало весь цикл навсегда.
+                logging.error(
+                    f"📢 Broadcast #{broadcast_id}: итерация завершилась ошибкой, "
+                    f"продолжу по расписанию: {exc}", exc_info=True,
+                )
 
     except asyncio.CancelledError:
         logging.info(f"📢 Broadcast #{broadcast_id}: task cancelled")
@@ -362,10 +389,10 @@ async def broadcast_loop(
         try:
             await bot.send_message(
                 chat_id=settings.ADMIN_CHAT_ID,
-                text=f"⚠️ Рассылка #{broadcast_id} упала с ошибкой:\n<code>{exc}</code>",
+                text=f"⚠️ Рассылка #{broadcast_id} упала с ошибкой:\n<code>{esc(exc)}</code>",
             )
-        except Exception:
-            pass
+        except Exception as notify_exc:
+            logging.error(f"📢 Не удалось сообщить админам об аварии рассылки: {notify_exc}")
     finally:
         active_tasks.pop(broadcast_id, None)
         logging.info(f"📢 Broadcast #{broadcast_id}: task finished")
@@ -391,8 +418,10 @@ async def stop_broadcast(message: Message):
         active_tasks[bid].cancel()
         try:
             await active_tasks[bid]
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logging.error(f"📢 Broadcast #{bid}: ошибка при остановке задачи: {e}")
 
     await crud.deactivate_broadcast(bid)
     active_tasks.pop(bid, None)
@@ -415,14 +444,14 @@ async def list_broadcasts(message: Message):
     for r in rows:
         status = "🟢 Активна" if r["is_active"] else "🔴 Остановлена"
         in_memory = "⚡ в памяти" if r["id"] in active_tasks else "💤 нет задачи"
-        text_preview = r["text"][:60] + ("..." if len(r["text"]) > 60 else "")
+        preview = truncate(strip_tags(r["text"]), 60)
         lines.append(
             f"<b>#{r['id']}</b> | {status} | {in_memory}\n"
             f"⏰ Каждые {r['interval_hours']}ч.\n"
-            f"📝 {text_preview}\n"
+            f"📝 {esc(preview)}\n"
         )
 
-    await message.reply("\n".join(lines))
+    await message.reply(fit("\n".join(lines), MESSAGE_LIMIT))
 
 
 # ═══════════════════════════════════════
@@ -482,11 +511,13 @@ async def load_active_broadcasts(bot: Bot) -> int:
 
 async def stop_all_broadcasts():
     """Остановка всех задач рассылки при завершении работы бота."""
-    for bid, task in list(active_tasks.items()):
+    for task in list(active_tasks.values()):
         task.cancel()
     for bid, task in list(active_tasks.items()):
         try:
             await task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception as e:
+            logging.error(f"📢 Broadcast #{bid} завершился с ошибкой при остановке: {e}")
     active_tasks.clear()

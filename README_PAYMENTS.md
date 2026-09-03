@@ -14,11 +14,12 @@
    > 100 USDT
    > 0.05 BTC
    > 50 TON
-4. Бот создает бесконечный инвойс (без expires_in) через aiocryptopay
-   `invoice = await client.create_invoice(asset, amount, description, payload)`
+4. Бот создает бесконечный инвойс (без expires_in) через собственный клиент Crypto Pay API:
+   `app/services/cryptopay.py::create_infinite_invoice(asset, amount, description, payload)`
 5. Счет улетает юзеру от имени бота (укр интерфейс) + кнопка Оплатить
 6. Юзер оплачивает в CryptoBot, потом жмет "Проверить оплату"
-7. Проверка через get_invoices -> status == paid
+7. Проверка через `getInvoices` -> status == paid; фоново это делает `invoice_watcher`
+   (пачками по 50 счетов за запрос), а не только по нажатию кнопки
 8. Админ тоже может проверить оплату кнопкой в админ-чате
 
 ## Бесконечный счет
