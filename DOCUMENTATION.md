@@ -318,7 +318,7 @@ A: Просто добавь его в админ-чат. `membership.py` авт
 ## 10. Дальнейшее развитие
 
 - Webhook вместо polling + FastAPI для CryptoBot webhook уведомлений об оплате (мгновенное подтверждение без кнопки Проверить)
-- RedisStorage для FSM чтобы не терять анкеты при рестарте
+- ~~RedisStorage для FSM~~ — сделано: FSM-состояния хранятся в SQLite (`app/database/fsm_storage.py`, таблица `fsm_states` в bot.db), рестарт бота не обнуляет анкеты/мастера
 - Экспорт статистики в Excel
 - Мультиязычность для админов (RU/UA)
 - Интеграция с TRC20 / TON напрямую без CryptoBot

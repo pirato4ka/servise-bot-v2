@@ -317,11 +317,11 @@ def _reset_throttling():
 
 
 @pytest.fixture(autouse=True)
-def _reset_fsm(dp):
+async def _reset_fsm(dp):
     """Сбрасываем FSM-состояния между тестами (storage общий на весь прогон)."""
-    dp.storage.storage.clear()
+    await dp.storage.clear_all()
     yield
-    dp.storage.storage.clear()
+    await dp.storage.clear_all()
 
 
 @pytest.fixture()

@@ -9,6 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 from app.config import settings
 from app.database.db import init_db
+from app.database.fsm_storage import SqliteFSMStorage
 from app.handlers import start, services, questionnaire, user_chat
 from app.handlers.admin import (
     admin_panel, services_crud, reply_handler, stats, membership,
@@ -38,7 +39,10 @@ def build_session() -> AiohttpSession:
 
 
 def build_dispatcher() -> Dispatcher:
-    dp = Dispatcher()
+    # FSM-состояния храним в SQLite, а не в памяти: иначе рестарт бота между
+    # шагами мастера услуг/анкеты обнуляет состояние, и дальнейший ввод
+    # молча игнорируется («добавление услуги не работает после перезапуска»).
+    dp = Dispatcher(storage=SqliteFSMStorage(settings.DB_PATH))
 
     # Админские — порядок важен.
     # membership ставим ПОСЛЕДНИМ: его обработчик «любое сообщение в админ-чате»
