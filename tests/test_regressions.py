@@ -159,6 +159,117 @@ async def test_deep_link_source_with_garbage(dp, bot, service):
 
 
 # ─────────────────────────────────────────────────────────────
+#  Кнопки заявки: ответ админа может прийти REPLY
+# ─────────────────────────────────────────────────────────────
+
+async def test_decline_reason_as_reply_is_processed_as_decline(dp, bot, service):
+    """Если админ на «Отклонить» отвечает REPLY — это причина отклонения,
+    а не обычный ответ клиенту. Раньше такое сообщение перехватывал
+    reply_handler и улетало пользователю как «Відповідь від адміністрації»,
+    а заявка оставалась open — выглядело как неработающая кнопка."""
+    ticket = await _fill_questionnaire(dp, bot)
+    await dp.feed_update(bot, cb_update(
+        f"ticket:decline:{ticket['admin_message_id']}",
+        message(chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+                from_user=user(ADMIN_ID)),
+        from_user=user(ADMIN_ID),
+    ))
+    bot.session.clear()
+
+    await dp.feed_update(bot, msg_update(message(
+        "не подходит",
+        chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+        from_user=user(ADMIN_ID),
+        reply_to_message=message(
+            "", chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+            from_user=user(ADMIN_ID), message_id=ticket["admin_message_id"],
+        ),
+    )))
+
+    texts = bot.session.texts_to(USER_ID)
+    assert any("відхилено" in t for t in texts), texts
+    row = await crud.get_ticket_by_id(ticket["id"])
+    assert row["status"] == "declined"
+
+
+async def test_confirm_price_as_reply_creates_invoice(dp, bot, service, monkeypatch):
+    """Цена после «Подтвердить» может быть отправлена REPLY — она всё равно
+    должна создать инвойс, а не уйти клиенту как обычное сообщение админа."""
+    from app.services import cryptopay as crypto_module
+
+    async def fake_create(asset, amount, description, payload=None, allow_anonymous=True):
+        return crypto_module.CryptoInvoice({
+            "invoice_id": 888, "status": "active", "asset": asset, "amount": str(amount),
+            "bot_invoice_url": "https://t.me/CryptoBot?start=888",
+            "mini_app_invoice_url": "https://t.me/x",
+        })
+
+    monkeypatch.setattr(
+        "app.handlers.admin.confirm_payment.create_infinite_invoice", fake_create
+    )
+
+    ticket = await _fill_questionnaire(dp, bot)
+    await dp.feed_update(bot, cb_update(
+        f"ticket:confirm:{ticket['admin_message_id']}",
+        message(chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+                from_user=user(ADMIN_ID)),
+        from_user=user(ADMIN_ID),
+    ))
+    bot.session.clear()
+
+    await dp.feed_update(bot, msg_update(message(
+        "150 USDT",
+        chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+        from_user=user(ADMIN_ID),
+        reply_to_message=message(
+            "", chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+            from_user=user(ADMIN_ID), message_id=ticket["admin_message_id"],
+        ),
+    )))
+
+    invoice_msgs = [c for c in bot.session.calls
+                    if type(c).__name__ == "SendMessage"
+                    and getattr(c, "chat_id", None) == USER_ID]
+    assert any("заявку підтверджено" in (getattr(c, "text", "") or "") for c in invoice_msgs), invoice_msgs
+    row = await crud.get_ticket_by_id(ticket["id"])
+    assert row["status"] == "invoice_sent"
+
+
+async def test_ticket_buttons_survive_inaccessible_message(dp, bot, service):
+    """Кнопка заявки на недоступном/удалённом сообщении не должна «умирать»:
+    ответ уходит в админ-чат, а FSM-состояние создаётся в админ-чате, где
+    админ продолжает ввод."""
+    ticket = await _fill_questionnaire(dp, bot)
+    await crud.add_admin(ADMIN_ID)
+    bot.session.clear()
+
+    callback = Update(
+        update_id=9001,
+        callback_query=CallbackQuery(
+            id="qq1",
+            from_user=user(ADMIN_ID),
+            chat_instance="1",
+            data=f"ticket:decline:{ticket['admin_message_id']}",
+            message=None,
+        ),
+    )
+    await dp.feed_update(bot, callback)
+
+    admin_texts = bot.session.texts_to(ADMIN_CHAT_ID)
+    assert any("причину" in t for t in admin_texts), admin_texts
+    assert not bot.session.texts_to(ADMIN_ID), "ответ не должен уйти в личку"
+
+    await dp.feed_update(bot, msg_update(message(
+        "не подходит",
+        chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+        from_user=user(ADMIN_ID),
+    )))
+
+    user_texts = bot.session.texts_to(USER_ID)
+    assert any("відхилено" in t for t in user_texts), user_texts
+
+
+# ─────────────────────────────────────────────────────────────
 #  Лимиты Telegram
 # ─────────────────────────────────────────────────────────────
 
