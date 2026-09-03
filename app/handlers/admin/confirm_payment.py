@@ -8,7 +8,7 @@ from aiogram.filters import Command, StateFilter
 from app.config import settings
 from app.database import crud
 from app.database.db import get_db
-from app.states.admin_states import ConfirmPayment
+from app.states.admin_states import ConfirmPayment, AddService
 from app.services.cryptopay import create_infinite_invoice
 from app.keyboards.inline import user_invoice_kb, admin_check_invoice_kb
 from app.data.texts import (
@@ -51,14 +51,11 @@ def parse_price(text: str):
 #  /cancel — сброс FSM состояния
 # ═══════════════════════════════════════
 
-@router.message(Command("cancel"), F.chat.id == settings.ADMIN_CHAT_ID)
+@router.message(Command("cancel"), StateFilter(ConfirmPayment, AddService))
 async def admin_cancel(message: Message, state: FSMContext):
-    current = await state.get_state()
-    if current:
-        await state.clear()
-        await message.reply("❌ Действие отменено. Можете обрабатывать любую заявку.")
-    else:
-        await message.reply("Нечего отменять.")
+    """Отмена только в своих состояниях — иначе /cancel перехватывал бы рассылку."""
+    await state.clear()
+    await message.reply("❌ Действие отменено. Можете обрабатывать любую заявку.")
 
 
 # ═══════════════════════════════════════
@@ -107,8 +104,7 @@ async def ticket_confirm_start(cb: CallbackQuery, state: FSMContext):
         )
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка в обработчике подтверждения")
         await cb.message.reply(f"❌ Ошибка: {e}")
 
 
@@ -155,8 +151,7 @@ async def ticket_decline_start(cb: CallbackQuery, state: FSMContext):
         )
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка в обработчике подтверждения")
         await cb.message.reply(f"❌ Ошибка: {e}")
 
 
@@ -219,14 +214,10 @@ async def price_input(message: Message, state: FSMContext):
         )
         await message.reply(admin_ok_text, reply_markup=admin_check_invoice_kb(invoice.invoice_id))
 
-        db = await get_db()
-        await db.execute("UPDATE tickets SET status='invoice_sent' WHERE id=?", (ticket_id,))
-        await db.commit()
-        await db.close()
+        await crud.set_ticket_status(ticket_id, "invoice_sent")
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка создания инвойса")
         await message.reply(ADMIN_INVOICE_ERROR_RU.format(e=str(e)[:1000]))
 
     await state.clear()
@@ -252,10 +243,7 @@ async def decline_reason_input(message: Message, state: FSMContext):
         await message.bot.send_message(chat_id=user_id, text=t("declined_user", lang).format(reason=reason))
         await message.reply(f"✅ Пользователю <code>{user_id}</code> отправлено отклонение.")
 
-        db = await get_db()
-        await db.execute("UPDATE tickets SET status='declined' WHERE id=?", (data["confirm_ticket_id"],))
-        await db.commit()
-        await db.close()
+        await crud.set_ticket_status(data["confirm_ticket_id"], "declined")
     except Exception as e:
         await message.reply(f"❌ Не удалось отправить: {e}")
 
@@ -332,13 +320,9 @@ async def confirm_command(message: Message, state: FSMContext):
             bot_url=invoice.bot_invoice_url, crypto_id=invoice.invoice_id
         ), reply_markup=admin_check_invoice_kb(invoice.invoice_id))
 
-        db = await get_db()
-        await db.execute("UPDATE tickets SET status='invoice_sent' WHERE id=?", (ticket["id"],))
-        await db.commit()
-        await db.close()
+        await crud.set_ticket_status(ticket["id"], "invoice_sent")
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка создания инвойса")
         await message.reply(ADMIN_INVOICE_ERROR_RU.format(e=str(e)[:1000]))
 
     await state.clear()

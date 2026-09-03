@@ -1,21 +1,28 @@
-from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery
 import logging
 
-router = Router()
+from aiogram import Router, F
+from aiogram.types import Message, CallbackQuery
 
-# Ловит ВСЕ колбеки и пишет в лог — чтобы понять доходят ли кнопки
+router = Router()
+router.message.filter(F.chat.type.in_(["group", "supergroup"]))
+
+
+# Ловит ВСЕ колбеки и пишет в лог — чтобы понять доходят ли кнопки.
+# Подключается только при DEBUG_ALL=1 (см. app.bot.build_dispatcher),
+# иначе необработанные кнопки висели бы «часиками» без cb.answer().
 @router.callback_query()
 async def debug_all_callbacks(cb: CallbackQuery):
-    logging.info(f"🔍 CALLBACK DEBUG: data={cb.data} | from={cb.from_user.id} | chat={cb.message.chat.id if cb.message else 'no-chat'} | msg_id={cb.message.message_id if cb.message else 'no-msg'}")
-    # не делаем answer, чтобы другие хендлеры тоже сработали
-    # но для теста отвечаем
-    # await cb.answer()
+    logging.debug(
+        f"🔍 CALLBACK: data={cb.data} | from={cb.from_user.id} | "
+        f"chat={cb.message.chat.id if cb.message else 'no-chat'}"
+    )
+    await cb.answer()  # обязательно снимаем «часики» с кнопки
 
-# Ловит ВСЕ сообщения в админ-чате
+
 @router.message()
 async def debug_all_messages(message: Message):
-    from app.config import settings
-    if message.chat.id != settings.ADMIN_CHAT_ID:
-        return
-    logging.info(f"🔍 MESSAGE DEBUG: chat={message.chat.id} | from={message.from_user.id} | text={message.text[:100] if message.text else 'NO_TEXT'} | reply_to={message.reply_to_message.message_id if message.reply_to_message else 'NO_REPLY'} | content_type={message.content_type}")
+    logging.debug(
+        f"🔍 MESSAGE: chat={message.chat.id} | from={message.from_user.id} | "
+        f"content_type={message.content_type} | reply_to="
+        f"{message.reply_to_message.message_id if message.reply_to_message else 'NO_REPLY'}"
+    )

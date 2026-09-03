@@ -1,5 +1,5 @@
 import logging
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import BaseFilter

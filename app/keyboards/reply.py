@@ -1,4 +1,5 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+
 from app.data.texts import t
 from app.database import crud
 
@@ -7,6 +8,22 @@ def get_cancel_keyboard(lang: str = "ua") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text=t("btn_cancel", lang))]],
         resize_keyboard=True
+    )
+
+
+def get_recipient_keyboard(lang: str = "ua") -> ReplyKeyboardMarkup:
+    """Шаг 3/3 — кому требуется услуга + кнопка отмены."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=t("btn_for_me", lang)),
+                KeyboardButton(text=t("btn_for_relative", lang)),
+                KeyboardButton(text=t("btn_for_friend", lang)),
+            ],
+            [KeyboardButton(text=t("btn_cancel", lang))],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
 
 

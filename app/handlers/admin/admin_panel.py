@@ -1,7 +1,6 @@
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
-from aiogram.fsm.context import FSMContext
 
 from app.config import settings
 from app.database import crud
@@ -13,7 +12,6 @@ from app.data.texts import (
     ADMIN_ADMINS_LIST_HEADER_RU, ADMIN_ADMINS_EMPTY_RU,
     ADMIN_REQ_NO_RIGHTS_RU
 )
-from app.states.admin_states import Broadcast
 
 router = Router()
 
@@ -38,35 +36,16 @@ async def cb_panel(cb: CallbackQuery):
 
 
 # ═══════════════════════════════════════
-#  📢 РАССЫЛКА (прямо здесь, чтобы точно работало)
-# ═══════════════════════════════════════
-
-@router.callback_query(F.data == "admin:broadcast")
-async def broadcast_start(cb: CallbackQuery, state: FSMContext):
-    print(f"🔴🔴🔴 BROADCAST_START CALLED!")
-    await cb.answer()
-    if cb.message.chat.id != settings.ADMIN_CHAT_ID:
-        return
-    await state.set_state(Broadcast.waiting_interval)
-    await cb.message.reply(
-        "📢 <b>Настройка рассылки</b>\n\n"
-        "Укажите <b>периодичность</b> в часах:\n"
-        "• <code>24</code> — раз в сутки\n"
-        "• <code>12</code> — каждые 12 часов\n"
-        "• <code>168</code> — раз в неделю\n"
-        "• <code>0.5</code> — каждые 30 минут (тест)\n\n"
-        "<i>Или /cancel для отмены</i>"
-    )
-
-
-# ═══════════════════════════════════════
 #  Услуги
 # ═══════════════════════════════════════
 
 @router.callback_query(F.data == "admin:services")
 async def cb_services(cb: CallbackQuery):
     services = await crud.get_services(active_only=False)
-    await cb.message.edit_text(ADMIN_SERVICE_LIST_HEADER_RU.format(count=len(services)), reply_markup=services_list_kb(services))
+    await cb.message.edit_text(
+        ADMIN_SERVICE_LIST_HEADER_RU.format(count=len(services)),
+        reply_markup=services_list_kb(services),
+    )
     await cb.answer()
 
 
@@ -87,8 +66,9 @@ async def view_service(cb: CallbackQuery):
         await cb.message.edit_text(text, reply_markup=service_action_kb(svc["id"], svc["is_active"]))
     except Exception:
         import html as html_lib
-        safe_text = html_lib.escape(text)
-        await cb.message.edit_text(safe_text, reply_markup=service_action_kb(svc["id"], svc["is_active"]))
+        await cb.message.edit_text(
+            html_lib.escape(text), reply_markup=service_action_kb(svc["id"], svc["is_active"])
+        )
     await cb.answer()
 
 
@@ -97,7 +77,10 @@ async def toggle_service(cb: CallbackQuery):
     sid = cb.data.split(":")[2]
     await crud.toggle_service(sid)
     svc = await crud.get_service_by_id(sid)
-    await cb.message.edit_text(f"Статус изменен. Теперь: {'🟢' if svc['is_active'] else '🔴'}", reply_markup=service_action_kb(svc["id"], svc["is_active"]))
+    await cb.message.edit_text(
+        f"Статус изменен. Теперь: {'🟢' if svc['is_active'] else '🔴'}",
+        reply_markup=service_action_kb(svc["id"], svc["is_active"]),
+    )
     await cb.answer("Статус изменен")
 
 
@@ -117,7 +100,9 @@ async def confirm_delete(cb: CallbackQuery):
     sid = cb.data.split(":")[2]
     await crud.delete_service(sid)
     services = await crud.get_services(active_only=False)
-    await cb.message.edit_text(ADMIN_DELETED_RU.format(count=len(services)), reply_markup=services_list_kb(services))
+    await cb.message.edit_text(
+        ADMIN_DELETED_RU.format(count=len(services)), reply_markup=services_list_kb(services)
+    )
     await cb.answer("Удалено")
 
 

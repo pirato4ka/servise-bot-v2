@@ -94,13 +94,21 @@ TEXTS = {
         "ua": "<b>Крок 2/3 — Вік</b>\n\nВкажіть ваш вік (числом 16-99)",
         "ru": "<b>Шаг 2/3 — Возраст</b>\n\nУкажите ваш возраст (числом 16-99)",
     },
-    "ask_plan_date": {
-        "ua": "<b>Крок 3/3 — Дата</b>\n\nКоли плануєте покупку?\n<i>напр: сьогодні, на тижні, 25.07</i>",
-        "ru": "<b>Шаг 3/3 — Дата</b>\n\nКогда планируете покупку?\n<i>напр: сегодня, на неделе, 25.07</i>",
+    "ask_recipient": {
+        "ua": "<b>Крок 3/3 — Кому потрібна послуга</b>\n\nПослуга потрібна вам чи іншій людині?\nНапишіть: <b>Мені</b> / <b>Рідному</b> / <b>Другу</b>",
+        "ru": "<b>Шаг 3/3 — Кому требуется услуга</b>\n\nУслуга требуется вам или другому человеку?\nНапишите: <b>Мне</b> / <b>Родному</b> / <b>Другу</b>",
+    },
+    "invalid_recipient": {
+        "ua": "⚠️ Напишіть одним словом: <b>Мені</b>, <b>Рідному</b> або <b>Другу</b>\n<i>Можна просто натиснути кнопку нижче 👇</i>",
+        "ru": "⚠️ Напишите одним словом: <b>Мне</b>, <b>Родному</b> или <b>Другу</b>\n<i>Можно просто нажать кнопку ниже 👇</i>",
     },
     "invalid_age": {
         "ua": "⚠️ Вік має бути числом від 16 до 99",
         "ru": "⚠️ Возраст должен быть числом от 16 до 99",
+    },
+    "invalid_name": {
+        "ua": "⚠️ Вкажіть, будь ласка, ім'я — мінімум 2 символи",
+        "ru": "⚠️ Укажите, пожалуйста, имя — минимум 2 символа",
     },
     "final_message": {
         "ua": """<b>✅ Дякуємо! Заявку прийнято.</b>
@@ -127,6 +135,20 @@ TEXTS = {
     "btn_cancel": {
         "ua": "❌ Скасувати",
         "ru": "❌ Отменить",
+    },
+
+    # ── Кому требуется услуга (шаг 3/3) ──
+    "btn_for_me": {
+        "ua": "👤 Мені",
+        "ru": "👤 Мне",
+    },
+    "btn_for_relative": {
+        "ua": "👨‍👩‍👦 Рідному",
+        "ru": "👨‍👩‍👦 Родному",
+    },
+    "btn_for_friend": {
+        "ua": "🤝 Другу",
+        "ru": "🤝 Другу",
     },
 
     # ── Ответ админа юзеру ──
@@ -236,7 +258,7 @@ ADMIN_TEMPLATE_RU = """
 ━━━━━━━━━━━━━━━
 👤 <b>Обращение:</b> {name}
 🎂 <b>Возраст:</b> {age}
-🕒 <b>Когда планирует:</b> {plan_date}
+👥 <b>Кому требуется:</b> {recipient}
 💎 <b>Услуга:</b> {service_title} (<code>{service_id}</code>)
 🔗 <b>Источник:</b> {source}
 🌐 <b>Язык:</b> {lang}
@@ -267,6 +289,7 @@ ADMIN_STATS_TEXT_RU = """
 👥 Всего пользователей: <b>{total}</b>
 🆕 Сегодня: <b>{today}</b>
 💬 Открытых диалогов: <b>{open_t}</b>
+💰 Оплаченных заявок: <b>{paid_t}</b>
 🏆 Топ-услуга: <b>{top_text}</b>
 ━━━━━━━━━━━━━━
 Отправь /users чтобы увидеть список последних 20 пользователей
@@ -333,6 +356,24 @@ Crypto Invoice ID: <code>{crypto_id}</code>
 ADMIN_INVOICE_ERROR_RU = "❌ Ошибка CryptoBot: {e}"
 ADMIN_DECLINE_ASK_REASON_RU = "Напиши причину отклонения (отправится пользователю):"
 
+ADMIN_INVOICE_PAID_RU = """
+💰 <b>СЧЁТ ОПЛАЧЕН</b>
+━━━━━━━━━━━━━━━
+👤 Пользователь: <code>{user_id}</code> | {username}
+💎 Услуга: <b>{service_title}</b>
+💰 Сумма: <b>{amount} {asset}</b>
+🧾 Invoice: <code>{crypto_id}</code>
+"""
+
+ADMIN_INVOICE_MISMATCH_RU = (
+    "⚠️ <b>Внимание:</b> сумма оплаты не совпадает с выставленной!\n"
+    "Выставляли: <b>{expected_amount} {expected_asset}</b>\n"
+    "Оплачено: <b>{paid_amount} {paid_asset}</b>"
+)
+
+ADMIN_ADMINS_SYNCED_RU = "👮 Админы синхронизированы с группой: +{added}, -{removed}, всего {total}."
+ADMIN_BROADCASTS_RESTORED_RU = "📢 Восстановлено активных рассылок: {count}"
+
 ADMIN_TEMPLATE = ADMIN_TEMPLATE_RU
 USER_CONTINUATION_TEMPLATE = USER_CONTINUATION_TEMPLATE_RU
 ADMIN_PANEL_TEXT = ADMIN_PANEL_TEXT_RU
@@ -347,7 +388,7 @@ WELCOME_TEXT_RU_TEXT = TEXTS["welcome"]["ru"]
 QUESTIONNAIRE_START_UA = TEXTS["questionnaire_start"]["ua"]
 ASK_NAME_UA = TEXTS["ask_name"]["ua"]
 ASK_AGE_UA = TEXTS["ask_age"]["ua"]
-ASK_PLAN_DATE_UA = TEXTS["ask_plan_date"]["ua"]
+ASK_RECIPIENT_UA = TEXTS["ask_recipient"]["ua"]
 INVALID_AGE_UA = TEXTS["invalid_age"]["ua"]
 FINAL_USER_MESSAGE_UA = TEXTS["final_message"]["ua"]
 CANCEL_MESSAGE_UA = TEXTS["cancel_message"]["ua"]
@@ -363,7 +404,7 @@ WELCOME_TEXT = WELCOME_TEXT_UA
 QUESTIONNAIRE_START = QUESTIONNAIRE_START_UA
 ASK_NAME = ASK_NAME_UA
 ASK_AGE = ASK_AGE_UA
-ASK_PLAN_DATE = ASK_PLAN_DATE_UA
+ASK_RECIPIENT = ASK_RECIPIENT_UA
 INVALID_AGE = INVALID_AGE_UA
 FINAL_USER_MESSAGE = FINAL_USER_MESSAGE_UA
 CANCEL_MESSAGE = CANCEL_MESSAGE_UA
