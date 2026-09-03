@@ -19,7 +19,7 @@ import asyncio
 from datetime import datetime
 
 import pytest
-from aiogram.types import Chat, Message, PhotoSize, Update
+from aiogram.types import CallbackQuery, Chat, Message, PhotoSize, Update, Video
 
 from app.database import crud
 from app.handlers.admin import broadcast as broadcast_module
@@ -36,7 +36,7 @@ from app.utils.text import (
     strip_tags,
     truncate,
 )
-from tests.conftest import ADMIN_CHAT_ID, ADMIN_ID, USER_ID, cb_update, message, msg_update, user
+from tests.conftest import ADMIN_CHAT_ID, ADMIN_ID, USER_ID, _BAD_AMP, cb_update, message, msg_update, user
 
 RU_USER = 555000222
 
@@ -65,6 +65,13 @@ def _photo_msg(chat_id, caption=None, from_user=None):
     return message(
         chat_id=chat_id, caption=caption, from_user=from_user,
         photo=[PhotoSize(file_id="photo-file-id", file_unique_id="uniq", width=800, height=600)],
+    )
+
+
+def _video_msg(chat_id, caption=None, from_user=None):
+    return message(
+        chat_id=chat_id, caption=caption, from_user=from_user,
+        video=Video(file_id="video-file-id", file_unique_id="uniq-v", width=1280, height=720, duration=5),
     )
 
 
@@ -170,6 +177,43 @@ async def test_photo_with_long_caption_from_user(dp, bot, service):
     # сам текст клиента при этом не потерялся — уехал отдельным сообщением
     admin_texts = bot.session.texts_to(ADMIN_CHAT_ID)
     assert any("детали сделки" in t for t in admin_texts), admin_texts
+
+
+async def test_video_from_user_reaches_admin(dp, bot, service):
+    """Видео от клиента больше не превращается в теряемое «Повідомлення»."""
+    await _fill_questionnaire(dp, bot)
+    bot.session.clear()
+
+    await dp.feed_update(bot, msg_update(_video_msg(USER_ID, caption="видеоинструкция")))
+
+    videos = [c for c in bot.session.calls if type(c).__name__ == "SendVideo"]
+    assert videos, "видео не дошло до админ-чата"
+    assert videos[0].caption and "видеоинструкция" in videos[0].caption
+    assert any("Продолжение диалога" in t for t in bot.session.texts_to(ADMIN_CHAT_ID))
+
+
+async def test_admin_video_reply_reaches_user(dp, bot, service):
+    """Админ отвечает видео — клиент получает и медиа, и текст ответа."""
+    ticket = await _fill_questionnaire(dp, bot)
+    bot.session.clear()
+
+    admin_video = message(
+        caption="инструкция к заказу",
+        chat_id=ADMIN_CHAT_ID,
+        chat_type="supergroup",
+        from_user=user(ADMIN_ID),
+        message_id=5050,
+        video=Video(file_id="video-file-id", file_unique_id="uniq-v", width=1280, height=720, duration=5),
+        reply_to_message=message(
+            "заявка", chat_id=ADMIN_CHAT_ID, chat_type="supergroup",
+            from_user=user(ADMIN_ID), message_id=ticket["admin_message_id"],
+        ),
+    )
+    await dp.feed_update(bot, msg_update(admin_video))
+
+    videos = [c for c in bot.session.calls if type(c).__name__ == "SendVideo"]
+    assert videos, "видео не доставлено клиенту"
+    assert any("Відповідь від адміністрації" in t for t in bot.session.texts_to(USER_ID))
 
 
 async def test_long_admin_reply_is_delivered(dp, bot, service):
@@ -547,6 +591,27 @@ async def test_message_without_from_user_in_admin_chat(dp, bot, service):
     assert await crud.get_admins() == []
 
 
+async def test_broadcast_commands_survive_channel_post(dp, bot, service):
+    """Пост из канала в админ-чате не роняет команды рассылок и не получает права."""
+    for cmd in ("/broadcasts", "/stopbroadcast 1"):
+        await dp.feed_update(bot, msg_update(message(
+            cmd, chat_id=ADMIN_CHAT_ID, chat_type="supergroup", from_user=None,
+        )))
+    assert await crud.get_admins() == []
+
+
+async def test_broadcast_callback_without_message_does_not_crash(dp, bot):
+    """Колбек «📢 Рассылка» без сообщения кнопки не даёт AttributeError."""
+    cb = CallbackQuery(
+        id="9001", from_user=user(USER_ID), chat_instance="1",
+        data="admin:broadcast", message=None,
+    )
+    await dp.feed_update(bot, Update(update_id=9001, callback_query=cb))
+    answers = [c for c in bot.session.calls if type(c).__name__ == "AnswerCallbackQuery"]
+    assert answers, "бот не ответил на колбек"
+    assert answers[-1].text == "⛔ Нет доступа"
+
+
 async def test_edit_service_after_state_lost(dp, bot, service):
     """Правка поля после потери состояния отвечает внятно, а не падает."""
     from aiogram.fsm.storage.memory import StorageKey
@@ -666,6 +731,27 @@ def test_truncate_and_fit():
     assert len(fit(template, 20, body="ы" * 500)) == 20
     # fit не трогает текст, если подставлять нечего (фигурные скобки клиента)
     assert fit("текст с {0} скобками", 100) == "текст с {0} скобками"
+
+
+def test_truncate_does_not_break_html_entities():
+    """Обрезка не должна резать ``&amp;`` пополам — иначе 400 can't parse entities."""
+    value = esc("скидка A&B " * 100)
+
+    for limit in range(5, 100):
+        result = truncate(value, limit)
+        assert len(result) <= limit
+        assert not _BAD_AMP.search(result), f"limit={limit}: {result!r}"
+
+
+def test_fit_preserves_entities_inside_escaped_values():
+    """fit ужимает самое длинное значение, но не рвёт HTML-entity внутри него."""
+    template = "💬 <b>Ответ</b>\n\n{admin_text}\n\n<tail>"
+    values = {"admin_text": esc("скидка <10% & бонус " * 80)}
+
+    for limit in range(60, 200):
+        result = fit(template, limit, **values)
+        assert len(result) <= limit
+        assert not _BAD_AMP.search(result), f"limit={limit}: {result!r}"
 
 
 def test_format_amount():

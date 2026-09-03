@@ -69,6 +69,16 @@ async def user_free_message(message: Message, state: FSMContext):
             text_content = "📄 Документ"
         elif message.voice:
             text_content = "🎤 Голосове"
+        elif message.video:
+            text_content = "🎬 Відео"
+        elif message.audio:
+            text_content = "🎧 Аудіо"
+        elif message.animation:
+            text_content = "🎞 Анімація"
+        elif message.sticker:
+            text_content = "😀 Стикер"
+        elif message.video_note:
+            text_content = "🎥 Кругове відео"
         else:
             text_content = "Повідомлення"
 
@@ -115,6 +125,45 @@ async def user_free_message(message: Message, state: FSMContext):
                     chat_id=settings.ADMIN_CHAT_ID, voice=message.voice.file_id, **kw
                 ),
             )
+        elif message.video:
+            sent_ids += await _send_media(
+                message, admin_text, reply_to, template_values,
+                send=lambda **kw: message.bot.send_video(
+                    chat_id=settings.ADMIN_CHAT_ID, video=message.video.file_id, **kw
+                ),
+            )
+        elif message.audio:
+            sent_ids += await _send_media(
+                message, admin_text, reply_to, template_values,
+                send=lambda **kw: message.bot.send_audio(
+                    chat_id=settings.ADMIN_CHAT_ID, audio=message.audio.file_id, **kw
+                ),
+            )
+        elif message.animation:
+            sent_ids += await _send_media(
+                message, admin_text, reply_to, template_values,
+                send=lambda **kw: message.bot.send_animation(
+                    chat_id=settings.ADMIN_CHAT_ID, animation=message.animation.file_id, **kw
+                ),
+            )
+        elif message.sticker or message.video_note:
+            # Эти типы Telegram не поддерживают подпись: сначала медиа, затем
+            # полный текст (с именем/услугой/данными клиента) в тот же тред.
+            if message.sticker:
+                sent = await message.bot.send_sticker(
+                    chat_id=settings.ADMIN_CHAT_ID, sticker=message.sticker.file_id,
+                    reply_to_message_id=reply_to,
+                )
+            else:
+                sent = await message.bot.send_video_note(
+                    chat_id=settings.ADMIN_CHAT_ID, video_note=message.video_note.file_id,
+                    reply_to_message_id=reply_to,
+                )
+            sent_ids.append(sent.message_id)
+            follow_up = await message.bot.send_message(
+                chat_id=settings.ADMIN_CHAT_ID, text=admin_text, reply_to_message_id=reply_to,
+            )
+            sent_ids.append(follow_up.message_id)
         else:
             sent = await message.bot.send_message(
                 chat_id=settings.ADMIN_CHAT_ID,

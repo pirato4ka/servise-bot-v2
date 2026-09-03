@@ -115,7 +115,7 @@ class FakeSession(AiohttpSession):
                 cls._check_html(text, name)
             if text and len(text) > MESSAGE_LIMIT:
                 raise TelegramBadRequest(method=None, message=f"{name}: message is too long")
-        elif name in ("SendPhoto", "SendDocument", "SendVoice", "SendAudio", "SendVideo"):
+        elif name in ("SendPhoto", "SendDocument", "SendVoice", "SendAudio", "SendVideo", "SendAnimation"):
             if html_mode:
                 cls._check_html(caption, name)
             if caption and len(caption) > CAPTION_LIMIT:
@@ -158,7 +158,10 @@ class FakeSession(AiohttpSession):
         self.calls.append(method)
         name = type(method).__name__
 
-        if name in ("SendMessage", "SendPhoto", "SendDocument", "SendVoice"):
+        if name in (
+            "SendMessage", "SendPhoto", "SendDocument", "SendVoice", "SendVideo",
+            "SendAudio", "SendAnimation", "SendVideoNote", "SendSticker",
+        ):
             self.message_id += 1
             return self._message(method.chat_id, self.message_id, getattr(method, "text", None))
 
