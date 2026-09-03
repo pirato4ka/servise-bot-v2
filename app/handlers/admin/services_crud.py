@@ -10,7 +10,7 @@ import logging
 import re
 
 from aiogram import F, Router
-from aiogram.filters import StateFilter
+from aiogram.filters import BaseFilter, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -46,8 +46,28 @@ from app.utils.callbacks import cb_args
 from app.utils.telegram import answer_callback, cb_send, edit_or_send
 from app.utils.text import BUTTON_LIMIT, esc, first_emoji
 
+class AdminOrAdminChat(BaseFilter):
+    """
+    Пропускает сообщения из админ-чата и сообщения любого админа.
+
+    /admin разрешает админу открыть панель в любой точке (в т.ч. в личке бота),
+    и колбеки «🆕 Добавить услугу» / «✏️ Редактировать» тоже работают там —
+    а вот ввод шагов мастера раньше фильтровался строго по админ-чату, поэтому
+    в личке текст уходил в user_chat и молча проглатывался предохранителем
+    «state не None → это анкета пользователя». В итоге «добавление услуги не
+    работало», хотя панель и вопросы мастера приходили.
+    """
+
+    async def __call__(self, message: Message) -> bool:
+        if message.chat.id == settings.ADMIN_CHAT_ID:
+            return True
+        if not message.from_user or message.from_user.is_bot:
+            return False
+        return await crud.is_admin(message.from_user.id)
+
+
 router = Router()
-router.message.filter(F.chat.id == settings.ADMIN_CHAT_ID)
+router.message.filter(AdminOrAdminChat())
 
 COPY_MARK = "="  # «скопировать как в украинской версии»
 

@@ -96,5 +96,11 @@ async def auto_register_admin_on_message(message: Message):
         return
     if any(getattr(message, field, None) for field in ("pinned_message", "new_chat_members", "left_chat_member")):
         return
+    # Fallback: сюда сообщение попадает, только если его не обработал ни один
+    # роутер выше (включая шаги FSM-мастеров). Логируем — иначе «молчаливое
+    # проглатывание» ввода не отличить от «обновление никто не обработал».
+    preview = (message.text or message.caption or "")[:60].replace("\n", " ")
+    if message.from_user.id and await crud.is_admin(message.from_user.id):
+        logging.info(f"MEMBERSHIP: сообщение админа {message.from_user.id} не обработано роутерами: {preview!r}")
     if not await crud.is_admin(message.from_user.id):
         await crud.add_admin(message.from_user.id)

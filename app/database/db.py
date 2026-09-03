@@ -87,6 +87,23 @@ CREATE TABLE IF NOT EXISTS broadcasts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- FSM-состояния (мастера услуг, анкета, рассылки, подтверждение оплаты).
+-- Хранятся в БД, чтобы рестарт бота не обнулял незавершённые диалоги
+-- (раньше aiogram держал их в памяти и терял при перезапуске).
+CREATE TABLE IF NOT EXISTS fsm_states (
+    bot_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    thread_id INTEGER NOT NULL DEFAULT 0,
+    business_connection_id TEXT NOT NULL DEFAULT '',
+    destiny TEXT NOT NULL DEFAULT 'default',
+    state TEXT,
+    data TEXT NOT NULL DEFAULT '{}',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (bot_id, chat_id, user_id, thread_id,
+                 business_connection_id, destiny)
+);
+
 -- Связь «сообщение в админ-чате -> заявка».
 -- Позволяет находить заявку по reply даже на 3-5 уровне вложенности
 -- и не терять диалог после перезапуска бота.
