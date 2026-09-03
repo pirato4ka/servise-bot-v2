@@ -227,8 +227,10 @@ def test_migration_from_single_language_schema(tmp_path):
 
     from app.config import settings
     import app.database.db as db_module
+    from app.database import bootstrap
 
     old_path, settings.DB_PATH = settings.DB_PATH, path
+    bootstrap.reset_cache()
     try:
         import asyncio
         asyncio.run(db_module.init_db())
@@ -245,3 +247,4 @@ def test_migration_from_single_language_schema(tmp_path):
                        "условия", "условия")
     finally:
         settings.DB_PATH = old_path
+        bootstrap.reset_cache()

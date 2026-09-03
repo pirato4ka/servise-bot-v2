@@ -12,13 +12,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
 
-# Бот не должен работать от root
-RUN useradd --create-home --shell /bin/bash bot \
-    && mkdir -p /data && chown -R bot:bot /data /app
-USER bot
+# Каталоги под базу:
+#   /data     — постоянный том (см. docker-compose.yml)
+#   /app/data — резервный: если том примонтирован от root и недоступен на запись,
+#               бот автоматически положит базу сюда (см. app/database/bootstrap.py)
+RUN mkdir -p /data /app/data && chmod 777 /data /app/data
 
-# Данные живут в отдельном томе (см. docker-compose.yml), иначе при
-# перезапуске контейнера теряются админы и история заявок
 VOLUME ["/data"]
 
+# Запускаем от root: на хостингах том монтируется от root, и процесс под
+# непривилегированным пользователем не может создать файл базы —
+# получается «sqlite3.OperationalError: unable to open database file».
+# Если принципиален запуск без root: создайте пользователя и заранее сделайте
+# chown каталога с базой на хосте (uid должен совпадать с uid в контейнере).
 CMD ["python", "-m", "app.bot"]

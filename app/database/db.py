@@ -2,7 +2,7 @@ import logging
 
 import aiosqlite
 
-from app.config import settings
+from app.database.bootstrap import apply_resolved_path
 
 CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS users (
@@ -182,7 +182,8 @@ async def _add_missing_columns(db: aiosqlite.Connection) -> None:
 
 
 async def init_db():
-    async with aiosqlite.connect(settings.DB_PATH, timeout=15.0) as db:
+    db_path = apply_resolved_path()
+    async with aiosqlite.connect(db_path, timeout=15.0) as db:
         await _apply_pragmas(db)
         await db.executescript(CREATE_TABLES)
         await db.commit()
@@ -191,7 +192,8 @@ async def init_db():
 
 
 async def get_db():
-    db = await aiosqlite.connect(settings.DB_PATH, timeout=15.0)
+    db_path = apply_resolved_path()
+    db = await aiosqlite.connect(db_path, timeout=15.0)
     db.row_factory = aiosqlite.Row
     await _apply_pragmas(db)
     return db
