@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 
+
 class Settings(BaseSettings):
     BOT_TOKEN: str
     ADMIN_CHAT_ID: int  # -100...
@@ -10,8 +11,14 @@ class Settings(BaseSettings):
     PROXY_URL: Optional[str] = None  # например http://127.0.0.1:1080 или socks5://...
     PROXY_URL_CRYPTO: Optional[str] = None  # отдельный прокси для CryptoBot если нужно
 
+    # Фоновый опрос неоплаченных счетов в CryptoBot (секунды). 0 = выключить.
+    INVOICE_POLL_INTERVAL: int = 60
+    # Логировать все входящие апдейты (отладочный роутер). В проде держим выключенным.
+    DEBUG_ALL: bool = False
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
 
 settings = Settings()

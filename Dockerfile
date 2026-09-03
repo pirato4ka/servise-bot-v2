@@ -1,23 +1,24 @@
 FROM python:3.11-slim
 
-# Рабочая директория
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DB_PATH=/data/bot.db
+
 WORKDIR /app
 
-# Системные зависимости
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc && \
-    rm -rf /var/lib/apt/lists/*
-
-# Копируем зависимости и устанавливаем
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем код
-COPY . .
+COPY app/ ./app/
 
-# Переменные окружения по умолчанию
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+# Бот не должен работать от root
+RUN useradd --create-home --shell /bin/bash bot \
+    && mkdir -p /data && chown -R bot:bot /data /app
+USER bot
 
-# Команда запуска
+# Данные живут в отдельном томе (см. docker-compose.yml), иначе при
+# перезапуске контейнера теряются админы и история заявок
+VOLUME ["/data"]
+
 CMD ["python", "-m", "app.bot"]

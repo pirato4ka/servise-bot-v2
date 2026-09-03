@@ -8,7 +8,7 @@ from aiogram.filters import Command, StateFilter
 from app.config import settings
 from app.database import crud
 from app.database.db import get_db
-from app.states.admin_states import ConfirmPayment
+from app.states.admin_states import ConfirmPayment, AddService
 from app.services.cryptopay import create_infinite_invoice
 from app.keyboards.inline import user_invoice_kb, admin_check_invoice_kb
 from app.data.texts import (
@@ -17,6 +17,13 @@ from app.data.texts import (
 )
 
 router = Router()
+
+
+def _service_title(service) -> str:
+    """Название услуги для админ-чата: русское, иначе украинское."""
+    if not service:
+        return "—"
+    return service["title_ru"] or service["title_ua"]
 
 
 async def _build_user_display(user_id: int) -> str:
@@ -51,14 +58,11 @@ def parse_price(text: str):
 #  /cancel — сброс FSM состояния
 # ═══════════════════════════════════════
 
-@router.message(Command("cancel"), F.chat.id == settings.ADMIN_CHAT_ID)
+@router.message(Command("cancel"), StateFilter(ConfirmPayment, AddService))
 async def admin_cancel(message: Message, state: FSMContext):
-    current = await state.get_state()
-    if current:
-        await state.clear()
-        await message.reply("❌ Действие отменено. Можете обрабатывать любую заявку.")
-    else:
-        await message.reply("Нечего отменять.")
+    """Отмена только в своих состояниях — иначе /cancel перехватывал бы рассылку."""
+    await state.clear()
+    await message.reply("❌ Действие отменено. Можете обрабатывать любую заявку.")
 
 
 # ═══════════════════════════════════════
@@ -107,8 +111,7 @@ async def ticket_confirm_start(cb: CallbackQuery, state: FSMContext):
         )
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка в обработчике подтверждения")
         await cb.message.reply(f"❌ Ошибка: {e}")
 
 
@@ -155,8 +158,7 @@ async def ticket_decline_start(cb: CallbackQuery, state: FSMContext):
         )
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка в обработчике подтверждения")
         await cb.message.reply(f"❌ Ошибка: {e}")
 
 
@@ -189,7 +191,7 @@ async def price_input(message: Message, state: FSMContext):
     admin_msg_id = data["confirm_admin_msg_id"]
 
     service = await crud.get_service_by_id(service_id)
-    service_title = service["title"] if service else service_id
+    service_title = _service_title(service) if service else service_id
 
     await message.reply(ADMIN_INVOICE_CREATING_RU.format(amount=amount, asset=asset))
 
@@ -207,7 +209,7 @@ async def price_input(message: Message, state: FSMContext):
         # Юзеру
         lang = await crud.get_user_lang(user_id)
         user_text = t("invoice_created_user", lang).format(service_title=service_title, amount=amount, asset=asset)
-        kb_user = user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id)
+        kb_user = user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id, lang)
         await message.bot.send_message(chat_id=user_id, text=user_text, reply_markup=kb_user)
 
         # Админу
@@ -219,14 +221,10 @@ async def price_input(message: Message, state: FSMContext):
         )
         await message.reply(admin_ok_text, reply_markup=admin_check_invoice_kb(invoice.invoice_id))
 
-        db = await get_db()
-        await db.execute("UPDATE tickets SET status='invoice_sent' WHERE id=?", (ticket_id,))
-        await db.commit()
-        await db.close()
+        await crud.set_ticket_status(ticket_id, "invoice_sent")
 
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка создания инвойса")
         await message.reply(ADMIN_INVOICE_ERROR_RU.format(e=str(e)[:1000]))
 
     await state.clear()
@@ -252,10 +250,7 @@ async def decline_reason_input(message: Message, state: FSMContext):
         await message.bot.send_message(chat_id=user_id, text=t("declined_user", lang).format(reason=reason))
         await message.reply(f"✅ Пользователю <code>{user_id}</code> отправлено отклонение.")
 
-        db = await get_db()
-        await db.execute("UPDATE tickets SET status='declined' WHERE id=?", (data["confirm_ticket_id"],))
-        await db.commit()
-        await db.close()
+        await crud.set_ticket_status(data["confirm_ticket_id"], "declined")
     except Exception as e:
         await message.reply(f"❌ Не удалось отправить: {e}")
 
@@ -303,7 +298,7 @@ async def confirm_command(message: Message, state: FSMContext):
         return
 
     service = await crud.get_service_by_id(ticket["service_id"])
-    service_title = service["title"] if service else ticket["service_id"]
+    service_title = _service_title(service) if service else ticket["service_id"]
 
     await message.reply(ADMIN_INVOICE_CREATING_RU.format(amount=amount, asset=asset))
 
@@ -322,8 +317,11 @@ async def confirm_command(message: Message, state: FSMContext):
 
         lang = await crud.get_user_lang(ticket["user_id"])
         user_text = t("invoice_created_user", lang).format(service_title=service_title, amount=amount, asset=asset)
-        await message.bot.send_message(chat_id=ticket["user_id"], text=user_text,
-                                       reply_markup=user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id))
+        await message.bot.send_message(
+            chat_id=ticket["user_id"], text=user_text,
+            reply_markup=user_invoice_kb(invoice.bot_invoice_url, invoice.invoice_id,
+                                         await crud.get_user_lang(ticket["user_id"])),
+        )
 
         user_display = await _build_user_display(ticket["user_id"])
         await message.reply(ADMIN_INVOICE_CREATED_RU.format(
@@ -332,13 +330,9 @@ async def confirm_command(message: Message, state: FSMContext):
             bot_url=invoice.bot_invoice_url, crypto_id=invoice.invoice_id
         ), reply_markup=admin_check_invoice_kb(invoice.invoice_id))
 
-        db = await get_db()
-        await db.execute("UPDATE tickets SET status='invoice_sent' WHERE id=?", (ticket["id"],))
-        await db.commit()
-        await db.close()
+        await crud.set_ticket_status(ticket["id"], "invoice_sent")
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logging.exception("Ошибка создания инвойса")
         await message.reply(ADMIN_INVOICE_ERROR_RU.format(e=str(e)[:1000]))
 
     await state.clear()

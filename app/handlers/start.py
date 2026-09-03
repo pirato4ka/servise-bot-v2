@@ -5,9 +5,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 
-from app.config import settings
 from app.database import crud
-from app.database.db import get_db
 from app.data.texts import t
 from app.keyboards.inline import get_lang_keyboard
 from app.keyboards.reply import get_services_keyboard
@@ -33,12 +31,8 @@ async def cmd_start(message: Message, state: FSMContext):
     await crud.upsert_user(user_id, username, full_name, source)
 
     # Проверяем — выбран ли язык?
-    db = await get_db()
-    async with db.execute("SELECT lang FROM users WHERE user_id=?", (user_id,)) as cur:
-        row = await cur.fetchone()
-    await db.close()
-
-    lang = row["lang"] if row and row["lang"] else None
+    user_row = await crud.get_user(user_id)
+    lang = user_row["lang"] if user_row and user_row["lang"] else None
 
     if lang:
         # Язык уже выбран — показываем welcome
@@ -69,11 +63,8 @@ async def choose_lang(cb: CallbackQuery):
             pass
 
     # Source
-    db = await get_db()
-    async with db.execute("SELECT source FROM users WHERE user_id=?", (user_id,)) as cur:
-        row = await cur.fetchone()
-    await db.close()
-    source = row["source"] if row else "direct"
+    user_row = await crud.get_user(user_id)
+    source = user_row["source"] if user_row and user_row["source"] else "direct"
 
     await _send_welcome(cb.message, lang, source)
     await cb.answer()
@@ -88,6 +79,15 @@ async def cmd_lang(message: Message):
     )
 
 
+@router.message(Command("cancel"), F.chat.type == "private")
+async def cmd_cancel(message: Message, state: FSMContext):
+    """Отмена анкеты в личке: текста про /cancel раньше не было обработчика."""
+    await state.clear()
+    lang = await crud.get_user_lang(message.from_user.id)
+    kb = await get_services_keyboard(lang)
+    await message.answer(t("cancel_message", lang), reply_markup=kb)
+
+
 async def _send_welcome(message: Message, lang: str, source: str):
     if source and source != "direct":
         source_line = t("source_channel", lang).format(source=source)
@@ -95,5 +95,5 @@ async def _send_welcome(message: Message, lang: str, source: str):
         source_line = t("source_direct", lang)
 
     welcome_text = t("welcome", lang).format(source_line=source_line)
-    kb = await get_services_keyboard()
+    kb = await get_services_keyboard(lang)
     await message.answer(welcome_text, reply_markup=kb)

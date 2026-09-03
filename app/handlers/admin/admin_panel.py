@@ -1,19 +1,34 @@
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message, CallbackQuery
-from aiogram.fsm.context import FSMContext
 
 from app.config import settings
 from app.database import crud
 from app.keyboards.inline import admin_panel_kb, services_list_kb, service_action_kb
 from app.data.texts import (
     ADMIN_PANEL_TEXT_RU, ADMIN_SERVICE_LIST_HEADER_RU,
-    ADMIN_SERVICE_VIEW_RU, ADMIN_SERVICE_ACTIVE_RU, ADMIN_SERVICE_INACTIVE_RU,
-    ADMIN_DELETE_CONFIRM_RU, ADMIN_DELETED_RU,
+    ADMIN_SERVICE_VIEW_RU_BILINGUAL, ADMIN_SERVICE_ACTIVE_RU, ADMIN_SERVICE_INACTIVE_RU,
+    ADMIN_DELETE_CONFIRM_RU, ADMIN_DELETED_RU, ADMIN_SERVICE_COPIED_RU,
     ADMIN_ADMINS_LIST_HEADER_RU, ADMIN_ADMINS_EMPTY_RU,
     ADMIN_REQ_NO_RIGHTS_RU
 )
-from app.states.admin_states import Broadcast
+
+
+def services_list_text(services) -> str:
+    return ADMIN_SERVICE_LIST_HEADER_RU.format(count=len(services))
+
+
+def service_view_text(svc) -> str:
+    """Карточка услуги: оба языка сразу, чтобы переводы были перед глазами."""
+    status = ADMIN_SERVICE_ACTIVE_RU if svc["is_active"] else ADMIN_SERVICE_INACTIVE_RU
+    return ADMIN_SERVICE_VIEW_RU_BILINGUAL.format(
+        emoji=svc["emoji"], id=svc["id"],
+        title_ua=svc["title_ua"], title_ru=svc["title_ru"],
+        button_ua=svc["button_label_ua"], button_ru=svc["button_label_ru"],
+        short_ua=svc["short_desc_ua"] or "-", short_ru=svc["short_desc_ru"] or "-",
+        terms_ua=svc["terms_ua"], terms_ru=svc["terms_ru"],
+        status=status,
+    )
 
 router = Router()
 
@@ -38,35 +53,15 @@ async def cb_panel(cb: CallbackQuery):
 
 
 # ═══════════════════════════════════════
-#  📢 РАССЫЛКА (прямо здесь, чтобы точно работало)
-# ═══════════════════════════════════════
-
-@router.callback_query(F.data == "admin:broadcast")
-async def broadcast_start(cb: CallbackQuery, state: FSMContext):
-    print(f"🔴🔴🔴 BROADCAST_START CALLED!")
-    await cb.answer()
-    if cb.message.chat.id != settings.ADMIN_CHAT_ID:
-        return
-    await state.set_state(Broadcast.waiting_interval)
-    await cb.message.reply(
-        "📢 <b>Настройка рассылки</b>\n\n"
-        "Укажите <b>периодичность</b> в часах:\n"
-        "• <code>24</code> — раз в сутки\n"
-        "• <code>12</code> — каждые 12 часов\n"
-        "• <code>168</code> — раз в неделю\n"
-        "• <code>0.5</code> — каждые 30 минут (тест)\n\n"
-        "<i>Или /cancel для отмены</i>"
-    )
-
-
-# ═══════════════════════════════════════
 #  Услуги
 # ═══════════════════════════════════════
 
 @router.callback_query(F.data == "admin:services")
 async def cb_services(cb: CallbackQuery):
     services = await crud.get_services(active_only=False)
-    await cb.message.edit_text(ADMIN_SERVICE_LIST_HEADER_RU.format(count=len(services)), reply_markup=services_list_kb(services))
+    await cb.message.edit_text(
+        services_list_text(services), reply_markup=services_list_kb(services)
+    )
     await cb.answer()
 
 
@@ -77,18 +72,14 @@ async def view_service(cb: CallbackQuery):
     if not svc:
         await cb.answer("Не найдено", show_alert=True)
         return
-    status = ADMIN_SERVICE_ACTIVE_RU if svc['is_active'] else ADMIN_SERVICE_INACTIVE_RU
-    text = ADMIN_SERVICE_VIEW_RU.format(
-        emoji=svc['emoji'], title=svc['title'], id=svc['id'],
-        button_label=svc['button_label'], short_desc=svc['short_desc'] or "-",
-        terms=svc['terms'], status=status
-    )
+    text = service_view_text(svc)
     try:
         await cb.message.edit_text(text, reply_markup=service_action_kb(svc["id"], svc["is_active"]))
     except Exception:
         import html as html_lib
-        safe_text = html_lib.escape(text)
-        await cb.message.edit_text(safe_text, reply_markup=service_action_kb(svc["id"], svc["is_active"]))
+        await cb.message.edit_text(
+            html_lib.escape(text), reply_markup=service_action_kb(svc["id"], svc["is_active"])
+        )
     await cb.answer()
 
 
@@ -97,7 +88,10 @@ async def toggle_service(cb: CallbackQuery):
     sid = cb.data.split(":")[2]
     await crud.toggle_service(sid)
     svc = await crud.get_service_by_id(sid)
-    await cb.message.edit_text(f"Статус изменен. Теперь: {'🟢' if svc['is_active'] else '🔴'}", reply_markup=service_action_kb(svc["id"], svc["is_active"]))
+    await cb.message.edit_text(
+        f"Статус изменен. Теперь: {'🟢' if svc['is_active'] else '🔴'}",
+        reply_markup=service_action_kb(svc["id"], svc["is_active"]),
+    )
     await cb.answer("Статус изменен")
 
 
@@ -117,8 +111,24 @@ async def confirm_delete(cb: CallbackQuery):
     sid = cb.data.split(":")[2]
     await crud.delete_service(sid)
     services = await crud.get_services(active_only=False)
-    await cb.message.edit_text(ADMIN_DELETED_RU.format(count=len(services)), reply_markup=services_list_kb(services))
+    await cb.message.edit_text(
+        ADMIN_DELETED_RU.format(count=len(services)), reply_markup=services_list_kb(services)
+    )
     await cb.answer("Удалено")
+
+
+@router.callback_query(F.data.startswith("svc:copyua:"))
+async def copy_ua_to_ru(cb: CallbackQuery):
+    """Копирует украинские тексты в русские — чтобы не перепечатывать."""
+    sid = cb.data.split(":")[2]
+    svc = await crud.get_service_by_id(sid)
+    if not svc:
+        await cb.answer("Не найдено", show_alert=True)
+        return
+    await crud.copy_service_language(sid, source="ua")
+    await cb.answer(ADMIN_SERVICE_COPIED_RU.format(
+        source="UA", target="RU", title=svc["title_ua"]
+    ), show_alert=True)
 
 
 # ═══════════════════════════════════════

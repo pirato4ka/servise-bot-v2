@@ -8,13 +8,46 @@ from app.config import settings
 from app.database import crud
 from app.data.texts import t, ADMIN_SEND_ERROR_NO_TEXT_RU, ADMIN_SENT_OK_RU, ADMIN_SEND_FAIL_RU
 
-
 router = Router()
 router.message.filter(F.chat.id == settings.ADMIN_CHAT_ID, F.reply_to_message)
 
+# Служебные сообщения Telegram (в т.ч. закрепление) приходят как reply на сообщение,
+# поэтому раньше на каждый пин бот отвечал «⚠️ Не удалось определить тикет».
+SERVICE_FIELDS = (
+    "pinned_message",
+    "new_chat_members",
+    "left_chat_member",
+    "new_chat_title",
+    "new_chat_photo",
+    "delete_chat_photo",
+    "group_chat_created",
+    "supergroup_chat_created",
+    "channel_chat_created",
+    "migrate_to_chat_id",
+    "migrate_from_chat_id",
+    "message_auto_delete_timer_changed",
+    "video_chat_started",
+    "video_chat_ended",
+    "video_chat_scheduled",
+    "video_chat_participants_invited",
+    "forum_topic_created",
+    "forum_topic_closed",
+    "forum_topic_reopened",
+    "forum_topic_edited",
+    "general_forum_topic_hidden",
+    "general_forum_topic_unhidden",
+    "write_access_allowed",
+    "successful_payment",
+    "connected_website",
+)
+
+
+def is_service_message(message: Message) -> bool:
+    return any(getattr(message, field, None) for field in SERVICE_FIELDS)
+
 
 async def _find_user_id_from_message(msg) -> int | None:
-    """Достаёт user_id из сообщения через entities (code) или regex по тексту"""
+    """Достаём user_id из сообщения через entities (code) или regex по тексту."""
     if not msg:
         return None
 
@@ -41,36 +74,43 @@ async def _find_user_id_from_message(msg) -> int | None:
     return None
 
 
-@router.message(F.reply_to_message)
+async def _resolve_ticket(message: Message):
+    """Ищем заявку: сначала по карте сообщений (любая вложенность), затем эвристики."""
+    reply_to_id = message.reply_to_message.message_id
+
+    ticket = await crud.resolve_ticket_by_admin_message(reply_to_id)
+    if ticket:
+        return ticket
+
+    parent = message.reply_to_message.reply_to_message
+    if parent:
+        ticket = await crud.resolve_ticket_by_admin_message(parent.message_id)
+        if ticket:
+            return ticket
+
+    for source in (message.reply_to_message, parent):
+        uid = await _find_user_id_from_message(source)
+        if uid:
+            ticket = await crud.get_last_ticket_by_user(uid)
+            if ticket:
+                return ticket
+
+    return None
+
+
+@router.message()
 async def admin_reply(message: Message):
-    logging.info(f"🟡 REPLY_HANDLER: msg_id={message.message_id} reply_to={message.reply_to_message.message_id} text='{(message.text or '')[:50]}'")
+    # Закрепление, вход/выход участников и прочие служебные события не должны
+    # восприниматься как ответ на заявку.
+    if is_service_message(message):
+        logging.debug(f"REPLY_HANDLER: skip service message {message.content_type}")
+        return
 
     reply_to_id = message.reply_to_message.message_id
-    ticket = await crud.get_ticket_by_admin_msg(reply_to_id)
-    logging.info(f"🟡 REPLY_HANDLER: by admin_msg({reply_to_id}) = {'found' if ticket else 'NOT FOUND'}")
-
-    # Способ 2: reply на продолжение — пробуем через родителя
-    if not ticket and message.reply_to_message.reply_to_message:
-        root_id = message.reply_to_message.reply_to_message.message_id
-        ticket = await crud.get_ticket_by_admin_msg(root_id)
-        logging.info(f"🟡 REPLY_HANDLER: second level root_id={root_id} = {'found' if ticket else 'NOT FOUND'}")
-
-    # Способ 3: достаём user_id из текста/entities сообщения на которое reply
-    if not ticket:
-        uid = await _find_user_id_from_message(message.reply_to_message)
-        if uid:
-            ticket = await crud.get_last_ticket_by_user(uid)
-            logging.info(f"🟡 REPLY_HANDLER: parsed uid={uid} from entities/text = {'found' if ticket else 'NOT FOUND'}")
-
-    # Способ 4: пробуем из текста родительского сообщения
-    if not ticket and message.reply_to_message.reply_to_message:
-        uid = await _find_user_id_from_message(message.reply_to_message.reply_to_message)
-        if uid:
-            ticket = await crud.get_last_ticket_by_user(uid)
-            logging.info(f"🟡 REPLY_HANDLER: parsed uid={uid} from parent = {'found' if ticket else 'NOT FOUND'}")
+    ticket = await _resolve_ticket(message)
 
     if not ticket:
-        logging.warning(f"🟡 REPLY_HANDLER: NO TICKET FOUND for reply_to={reply_to_id}")
+        logging.warning(f"REPLY_HANDLER: NO TICKET FOUND for reply_to={reply_to_id}")
         await message.reply("⚠️ Не удалось определить тикет. Попробуй reply на исходную заявку.")
         return
 
@@ -83,7 +123,7 @@ async def admin_reply(message: Message):
 
     try:
         await crud.log_message(user_id, ticket["id"], "admin_to_user", admin_text)
-    except:
+    except Exception:
         pass
 
     try:
@@ -96,11 +136,10 @@ async def admin_reply(message: Message):
                 text=reply_text.format(admin_text=admin_text)
             )
         elif message.photo:
-            await message.bot.send_photo(
-                chat_id=user_id,
-                photo=message.photo[-1].file_id,
-                caption=reply_text.format(admin_text=admin_text) if admin_text else "💬 " + ("Відповідь від адміністрації" if lang == "ua" else "Ответ от администрации")
+            caption = reply_text.format(admin_text=admin_text) if admin_text else (
+                "💬 " + ("Відповідь від адміністрації" if lang == "ua" else "Ответ от администрации")
             )
+            await message.bot.send_photo(chat_id=user_id, photo=message.photo[-1].file_id, caption=caption)
         elif message.document:
             await message.bot.send_document(chat_id=user_id, document=message.document.file_id, caption=admin_text)
         elif message.voice:
@@ -108,9 +147,12 @@ async def admin_reply(message: Message):
             if admin_text:
                 await message.bot.send_message(chat_id=user_id, text=reply_text.format(admin_text=admin_text))
 
-        logging.info(f"🟡 REPLY_HANDLER: sent to user {user_id} OK")
+        # Запоминаем ответ админа, чтобы reply на reply тоже находил заявку
+        await crud.link_admin_message(message.message_id, ticket["id"], reply_to_id)
+
+        logging.info(f"REPLY_HANDLER: sent to user {user_id} OK")
         await message.reply(ADMIN_SENT_OK_RU.format(uid=user_id))
 
     except Exception as e:
-        logging.error(f"🟡 REPLY_HANDLER: send error: {e}")
+        logging.error(f"REPLY_HANDLER: send error: {e}")
         await message.reply(ADMIN_SEND_FAIL_RU.format(e=e))

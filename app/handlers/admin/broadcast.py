@@ -1,29 +1,22 @@
 import asyncio
 import logging
-import time
+from datetime import datetime
 
 from aiogram import Router, F, Bot
+from aiogram.exceptions import TelegramRetryAfter, TelegramForbiddenError, TelegramBadRequest
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import Command, StateFilter
 
 from app.config import settings
 from app.database import crud
-from app.database.db import get_db
 from app.states.admin_states import Broadcast
 
 router = Router()
 
-# ═══════════════════════════════════════
-#  Хранилище активных задач рассылки
-# ═══════════════════════════════════════
-
+# Хранилище активных задач рассылки (id рассылки -> asyncio.Task)
 active_tasks: dict[int, asyncio.Task] = {}
 
-
-# ═══════════════════════════════════════
-#  Вспомогательная проверка прав
-# ═══════════════════════════════════════
 
 async def is_admin_user(user_id: int, chat_id: int) -> bool:
     """Проверяет, является ли пользователь администратором."""
@@ -33,35 +26,36 @@ async def is_admin_user(user_id: int, chat_id: int) -> bool:
 
 
 # ═══════════════════════════════════════
-#  /cancel — отмена в любом состоянии
+#  /cancel — отмена в любом состоянии рассылки
 # ═══════════════════════════════════════
 
-@router.message(
-    Command("cancel"),
-    StateFilter(Broadcast)
-)
+@router.message(Command("cancel"), StateFilter(Broadcast))
 async def broadcast_cancel_cmd(message: Message, state: FSMContext):
-    current = await state.get_state()
-    if current is None:
-        return
     await state.clear()
     await message.reply("❌ Настройка рассылки отменена.")
 
 
+@router.message(Command("cancel"), F.chat.id == settings.ADMIN_CHAT_ID)
+async def broadcast_cancel_fallback(message: Message, state: FSMContext):
+    """Если /cancel не перехватил никто другой — просто чистим состояние (только админ-чат)."""
+    if await state.get_state() is None:
+        return
+    await state.clear()
+    await message.reply("❌ Действие отменено.")
+
+
 # ═══════════════════════════════════════
-#  Кнопка "📢 Рассылка"
+#  Кнопка «📢 Рассылка»
 # ═══════════════════════════════════════
 
 @router.callback_query(F.data == "admin:broadcast")
 async def broadcast_start(cb: CallbackQuery, state: FSMContext):
     await cb.answer()
 
-    # Проверка прав
     if not await is_admin_user(cb.from_user.id, cb.message.chat.id):
         await cb.answer("⛔ Нет доступа", show_alert=True)
         return
 
-    # Очищаем предыдущие данные FSM
     await state.clear()
     await state.set_state(Broadcast.waiting_interval)
 
@@ -81,12 +75,8 @@ async def broadcast_start(cb: CallbackQuery, state: FSMContext):
 #  Шаг 1: Периодичность
 # ═══════════════════════════════════════
 
-@router.message(
-    StateFilter(Broadcast.waiting_interval),
-    F.text
-)
+@router.message(StateFilter(Broadcast.waiting_interval), F.text)
 async def broadcast_interval(message: Message, state: FSMContext):
-    # Проверка прав
     if not await is_admin_user(message.from_user.id, message.chat.id):
         return
 
@@ -96,10 +86,7 @@ async def broadcast_interval(message: Message, state: FSMContext):
         if hours <= 0:
             raise ValueError("Число должно быть больше 0")
     except (ValueError, TypeError):
-        await message.reply(
-            "❌ Введите корректное число больше 0.\n"
-            "Пример: <code>24</code> или <code>0.5</code>"
-        )
+        await message.reply("❌ Введите корректное число больше 0.\nПример: <code>24</code> или <code>0.5</code>")
         return
 
     await state.update_data(interval_hours=hours)
@@ -115,37 +102,25 @@ async def broadcast_interval(message: Message, state: FSMContext):
 #  Шаг 2: Текст рассылки
 # ═══════════════════════════════════════
 
-@router.message(
-    StateFilter(Broadcast.waiting_text)
-)
+@router.message(StateFilter(Broadcast.waiting_text))
 async def broadcast_text(message: Message, state: FSMContext):
-    # Проверка прав
     if not await is_admin_user(message.from_user.id, message.chat.id):
         return
 
-    # Если пришла команда — не обрабатываем как текст
     if message.text and message.text.startswith("/"):
-        await message.reply(
-            "❌ Неизвестная команда.\n"
-            "Отправьте текст рассылки или /cancel для отмены."
-        )
+        await message.reply("❌ Неизвестная команда.\nОтправьте текст рассылки или /cancel для отмены.")
         return
 
     text = message.text or message.caption or ""
     if not text.strip():
-        await message.reply(
-            "❌ Сообщение не содержит текста.\n"
-            "Отправьте текст или фото с подписью."
-        )
+        await message.reply("❌ Сообщение не содержит текста.\nОтправьте текст или фото с подписью.")
         return
 
     await state.update_data(broadcast_text=text)
     await state.set_state(Broadcast.waiting_photo)
     await message.reply(
-        "✅ Текст принят.\n\n"
-        "Хотите добавить <b>фото</b> к рассылке?\n"
-        "• Отправьте фото\n"
-        "• Или напишите /skip чтобы пропустить"
+        "✅ Текст принят.\n\nХотите добавить <b>фото</b> к рассылке?\n"
+        "• Отправьте фото\n• Или напишите /skip чтобы пропустить"
     )
 
 
@@ -153,50 +128,31 @@ async def broadcast_text(message: Message, state: FSMContext):
 #  Шаг 3: Фото (или пропуск)
 # ═══════════════════════════════════════
 
-@router.message(
-    StateFilter(Broadcast.waiting_photo),
-    Command("skip")
-)
+@router.message(StateFilter(Broadcast.waiting_photo), Command("skip"))
 async def broadcast_skip_photo(message: Message, state: FSMContext):
     if not await is_admin_user(message.from_user.id, message.chat.id):
         return
-
     await state.update_data(photo_file_id=None)
     await state.set_state(Broadcast.waiting_confirm)
     await send_preview(message, state)
 
 
-@router.message(
-    StateFilter(Broadcast.waiting_photo),
-    F.photo
-)
+@router.message(StateFilter(Broadcast.waiting_photo), F.photo)
 async def broadcast_photo(message: Message, state: FSMContext):
     if not await is_admin_user(message.from_user.id, message.chat.id):
         return
-
-    photo_file_id = message.photo[-1].file_id
-    await state.update_data(photo_file_id=photo_file_id)
+    await state.update_data(photo_file_id=message.photo[-1].file_id)
     await state.set_state(Broadcast.waiting_confirm)
     await send_preview(message, state)
 
 
-@router.message(
-    StateFilter(Broadcast.waiting_photo),
-    F.text
-)
+@router.message(StateFilter(Broadcast.waiting_photo), F.text)
 async def broadcast_photo_text_fallback(message: Message, state: FSMContext):
     if not await is_admin_user(message.from_user.id, message.chat.id):
         return
-
-    # Команды (кроме /skip и /cancel уже обработаны выше)
-    if message.text and message.text.startswith("/"):
-        await message.reply(
-            "❌ Неизвестная команда.\n"
-            "Отправьте фото, напишите /skip или /cancel."
-        )
+    if message.text.startswith("/"):
+        await message.reply("❌ Неизвестная команда.\nОтправьте фото, напишите /skip или /cancel.")
         return
-
-    # Любой текст — считаем что фото не нужно
     await state.update_data(photo_file_id=None)
     await state.set_state(Broadcast.waiting_confirm)
     await send_preview(message, state)
@@ -212,15 +168,12 @@ async def send_preview(message: Message, state: FSMContext):
     text = data.get("broadcast_text")
     photo_id = data.get("photo_file_id")
 
-    # Валидация данных
     if interval is None or not text:
-        await message.reply(
-            "❌ Ошибка: данные рассылки потеряны. Начните заново через меню."
-        )
+        await message.reply("❌ Ошибка: данные рассылки потеряны. Начните заново через меню.")
         await state.clear()
         return
 
-    total = await crud.get_users_count()
+    total = len(await crud.get_broadcast_targets())
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [
@@ -244,21 +197,17 @@ async def send_preview(message: Message, state: FSMContext):
     try:
         if photo_id:
             await message.bot.send_photo(
-                chat_id=message.chat.id,
-                photo=photo_id,
-                caption=preview_header,
-                reply_markup=kb,
-                parse_mode="HTML"
+                chat_id=message.chat.id, photo=photo_id, caption=preview_header,
+                reply_markup=kb, parse_mode="HTML",
             )
         else:
             await message.reply(preview_header, reply_markup=kb)
     except Exception as exc:
         logging.error(f"Preview send error: {exc}")
-        # Fallback без форматирования
         try:
             await message.reply(
                 f"📢 Превью\n⏰ {interval}ч. | 👥 {total} чел. | 📷 {'Да' if photo_id else 'Нет'}\n\n{text}",
-                reply_markup=kb
+                reply_markup=kb,
             )
         except Exception as exc2:
             logging.error(f"Preview fallback error: {exc2}")
@@ -266,7 +215,6 @@ async def send_preview(message: Message, state: FSMContext):
 
 @router.callback_query(F.data == "broadcast:confirm")
 async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
-    # Проверка прав
     if not await is_admin_user(cb.from_user.id, cb.message.chat.id):
         await cb.answer("⛔ Нет доступа", show_alert=True)
         return
@@ -274,13 +222,8 @@ async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
     await cb.answer("🚀 Запускаю...")
 
     data = await state.get_data()
-
-    # Валидация — данные могли протухнуть
     if not data.get("broadcast_text") or data.get("interval_hours") is None:
-        await cb.message.answer(
-            "❌ Данные рассылки устарели или потеряны.\n"
-            "Пожалуйста, начните настройку заново."
-        )
+        await cb.message.answer("❌ Данные рассылки устарели или потеряны. Начните настройку заново.")
         await state.clear()
         return
 
@@ -288,32 +231,15 @@ async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
     text = data["broadcast_text"]
     photo_id = data.get("photo_file_id")
 
-    # Сохраняем в БД
-    broadcast_id = None
-    db = await get_db()
-    try:
-        cur = await db.execute(
-            "INSERT INTO broadcasts (admin_id, interval_hours, text, photo_file_id, is_active) "
-            "VALUES (?, ?, ?, ?, 1)",
-            (cb.from_user.id, interval, text, photo_id)
-        )
-        broadcast_id = cur.lastrowid
-        await db.commit()
-    except Exception as exc:
-        logging.error(f"Broadcast DB insert error: {exc}")
+    broadcast_id = await crud.create_broadcast(cb.from_user.id, interval, text, photo_id)
+    if not broadcast_id:
         await cb.message.answer("❌ Ошибка сохранения в базу данных. Попробуйте снова.")
         await state.clear()
         return
-    finally:
-        await db.close()
 
-    # Очищаем FSM ДО запуска задачи
     await state.clear()
 
-    # Запускаем фоновую задачу
-    task = asyncio.create_task(
-        broadcast_loop(cb.bot, broadcast_id, interval, text, photo_id)
-    )
+    task = asyncio.create_task(broadcast_loop(cb.bot, broadcast_id, interval_hours=interval, initial_delay=0))
     active_tasks[broadcast_id] = task
 
     await cb.message.answer(
@@ -323,10 +249,7 @@ async def broadcast_confirm(cb: CallbackQuery, state: FSMContext):
         f"🛑 Остановить: /stopbroadcast {broadcast_id}\n"
         f"📋 Список всех: /broadcasts"
     )
-    logging.info(
-        f"📢 Broadcast #{broadcast_id} started by {cb.from_user.id}: "
-        f"interval={interval}h, photo={'yes' if photo_id else 'no'}"
-    )
+    logging.info(f"📢 Broadcast #{broadcast_id} started by {cb.from_user.id}: interval={interval}h")
 
 
 @router.callback_query(F.data == "broadcast:cancel")
@@ -337,136 +260,113 @@ async def broadcast_cancel_cb(cb: CallbackQuery, state: FSMContext):
 
 
 # ═══════════════════════════════════════
-#  Фоновая задача рассылки
+#  Отправка
 # ═══════════════════════════════════════
+
+async def _send_one(bot: Bot, uid: int, text: str, photo_id: str | None) -> str:
+    """Отправляет одно сообщение, аккуратно переживая лимиты Telegram."""
+    for attempt in range(3):
+        try:
+            if photo_id:
+                await bot.send_photo(chat_id=uid, photo=photo_id, caption=text, parse_mode="HTML")
+            else:
+                await bot.send_message(chat_id=uid, text=text, parse_mode="HTML")
+            return "sent"
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(float(getattr(e, "retry_after", 1)) + 0.5)
+        except (TelegramForbiddenError, TelegramBadRequest) as e:
+            err = str(e).lower()
+            if "blocked" in err or "deactivated" in err or "not found" in err or "chat not found" in err:
+                return "blocked"
+            if attempt == 2:
+                return "failed"
+            await asyncio.sleep(1)
+        except Exception:
+            if attempt == 2:
+                return "failed"
+            await asyncio.sleep(1)
+    return "failed"
+
+
+async def run_broadcast(bot: Bot, broadcast_id: int, current_text: str, current_photo: str | None) -> dict:
+    users = await crud.get_broadcast_targets()
+    sent = failed = blocked = 0
+
+    for user in users:
+        result = await _send_one(bot, user["user_id"], current_text, current_photo)
+        if result == "sent":
+            sent += 1
+        elif result == "blocked":
+            blocked += 1
+        else:
+            failed += 1
+        await asyncio.sleep(0.05)  # антиспам Telegram
+
+    await crud.touch_broadcast(broadcast_id)
+    logging.info(f"📢 Broadcast #{broadcast_id} done: sent={sent}, failed={failed}, blocked={blocked}")
+
+    try:
+        await bot.send_message(
+            chat_id=settings.ADMIN_CHAT_ID,
+            text=(
+                f"📢 <b>Рассылка #{broadcast_id} выполнена</b>\n"
+                f"✅ Отправлено: {sent}\n"
+                f"🚫 Заблокировали бота: {blocked}\n"
+                f"❌ Других ошибок: {failed}"
+            ),
+        )
+    except Exception as exc:
+        logging.error(f"📢 Admin notification failed: {exc}")
+
+    return {"sent": sent, "failed": failed, "blocked": blocked}
+
 
 async def broadcast_loop(
     bot: Bot,
     broadcast_id: int,
     interval_hours: float,
-    text: str,
-    photo_id: str | None,
-    skip_first_sleep: bool = False  # True при восстановлении если пора слать
+    text: str = "",
+    photo_id: str | None = None,
+    initial_delay: float | None = None,
 ):
-    logging.info(
-        f"📢 Broadcast #{broadcast_id} loop started: "
-        f"every {interval_hours}h, skip_first_sleep={skip_first_sleep}"
-    )
+    """
+    initial_delay=None → ждать полный интервал;
+    0 → отправить сразу (первый запуск);
+    N → подождать N секунд (восстановление после рестарта).
+    """
+    delay = interval_hours * 3600 if initial_delay is None else initial_delay
+    logging.info(f"📢 Broadcast #{broadcast_id} loop started: every {interval_hours}h, first delay={delay}s")
 
     try:
         while True:
-            # Ждём интервал (кроме случая принудительного пропуска)
-            if not skip_first_sleep:
-                await asyncio.sleep(interval_hours * 3600)
-            skip_first_sleep = False  # Сбрасываем флаг после первого цикла
+            if delay > 0:
+                await asyncio.sleep(delay)
+            delay = interval_hours * 3600
 
-            # Проверяем активность в БД
-            db = await get_db()
-            try:
-                async with db.execute(
-                    "SELECT is_active FROM broadcasts WHERE id = ?",
-                    (broadcast_id,)
-                ) as cur:
-                    row = await cur.fetchone()
-            finally:
-                await db.close()
-
+            row = await crud.get_broadcast(broadcast_id)
             if not row or not row["is_active"]:
                 logging.info(f"📢 Broadcast #{broadcast_id}: deactivated, stopping loop")
                 break
 
-            # Получаем актуальный текст и фото из БД (на случай обновления)
-            db = await get_db()
-            try:
-                async with db.execute(
-                    "SELECT text, photo_file_id FROM broadcasts WHERE id = ?",
-                    (broadcast_id,)
-                ) as cur:
-                    broadcast_row = await cur.fetchone()
-            finally:
-                await db.close()
+            # Текст/фото берём актуальные из БД — можно менять на ходу
+            current_text = row["text"] or text
+            current_photo = row["photo_file_id"] if row["photo_file_id"] is not None else photo_id
 
-            if broadcast_row:
-                current_text = broadcast_row["text"]
-                current_photo = broadcast_row["photo_file_id"]
-            else:
-                current_text = text
-                current_photo = photo_id
-
-            # Получаем пользователей
-            users = await crud.get_all_users(limit=10000)
-
-            sent = 0
-            failed = 0
-            blocked = 0
-
-            for user in users:
-                uid = user["user_id"]
-
-                # Пропускаем забаненных
-                if user.get("is_banned"):
-                    continue
-
-                try:
-                    if current_photo:
-                        await bot.send_photo(
-                            chat_id=uid,
-                            photo=current_photo,
-                            caption=current_text,
-                            parse_mode="HTML"
-                        )
-                    else:
-                        await bot.send_message(
-                            chat_id=uid,
-                            text=current_text,
-                            parse_mode="HTML"
-                        )
-                    sent += 1
-                except Exception as exc:
-                    err_str = str(exc).lower()
-                    if "blocked" in err_str or "deactivated" in err_str or "not found" in err_str:
-                        blocked += 1
-                    else:
-                        failed += 1
-                        logging.warning(f"📢 Broadcast #{broadcast_id} failed for {uid}: {exc}")
-
-                # Задержка между сообщениями (антиспам Telegram)
-                await asyncio.sleep(0.05)
-
-            logging.info(
-                f"📢 Broadcast #{broadcast_id} done: "
-                f"sent={sent}, failed={failed}, blocked={blocked}"
-            )
-
-            # Уведомляем админа
-            try:
-                await bot.send_message(
-                    chat_id=settings.ADMIN_CHAT_ID,
-                    text=(
-                        f"📢 <b>Рассылка #{broadcast_id} выполнена</b>\n"
-                        f"✅ Отправлено: {sent}\n"
-                        f"🚫 Заблокировали бота: {blocked}\n"
-                        f"❌ Других ошибок: {failed}"
-                    )
-                )
-            except Exception as exc:
-                logging.error(f"📢 Admin notification failed: {exc}")
+            await run_broadcast(bot, broadcast_id, current_text, current_photo)
 
     except asyncio.CancelledError:
         logging.info(f"📢 Broadcast #{broadcast_id}: task cancelled")
         raise
     except Exception as exc:
         logging.error(f"📢 Broadcast #{broadcast_id} unexpected error: {exc}", exc_info=True)
-        # Уведомляем админа об ошибке
         try:
             await bot.send_message(
                 chat_id=settings.ADMIN_CHAT_ID,
-                text=f"⚠️ Рассылка #{broadcast_id} упала с ошибкой:\n<code>{exc}</code>"
+                text=f"⚠️ Рассылка #{broadcast_id} упала с ошибкой:\n<code>{exc}</code>",
             )
         except Exception:
             pass
     finally:
-        # Убираем задачу из словаря при завершении
         active_tasks.pop(broadcast_id, None)
         logging.info(f"📢 Broadcast #{broadcast_id}: task finished")
 
@@ -482,32 +382,19 @@ async def stop_broadcast(message: Message):
 
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
-        await message.reply(
-            "❌ Использование: <code>/stopbroadcast &lt;id&gt;</code>\n"
-            "Пример: <code>/stopbroadcast 3</code>"
-        )
+        await message.reply("❌ Использование: <code>/stopbroadcast &lt;id&gt;</code>\nПример: <code>/stopbroadcast 3</code>")
         return
 
     bid = int(args[1])
 
-    # Отменяем задачу если есть
     if bid in active_tasks:
         active_tasks[bid].cancel()
-        # active_tasks.pop удалится в finally блоке broadcast_loop
-        await asyncio.sleep(0.1)  # Даём время на cancellation
+        try:
+            await active_tasks[bid]
+        except (asyncio.CancelledError, Exception):
+            pass
 
-    # Деактивируем в БД в любом случае
-    db = await get_db()
-    try:
-        await db.execute(
-            "UPDATE broadcasts SET is_active = 0 WHERE id = ?",
-            (bid,)
-        )
-        await db.commit()
-    finally:
-        await db.close()
-
-    # Убираем из словаря на случай если loop уже завершился
+    await crud.deactivate_broadcast(bid)
     active_tasks.pop(bid, None)
 
     await message.reply(f"🛑 Рассылка #{bid} остановлена.")
@@ -519,15 +406,7 @@ async def list_broadcasts(message: Message):
     if not await is_admin_user(message.from_user.id, message.chat.id):
         return
 
-    db = await get_db()
-    try:
-        async with db.execute(
-            "SELECT * FROM broadcasts ORDER BY id DESC LIMIT 10"
-        ) as cur:
-            rows = await cur.fetchall()
-    finally:
-        await db.close()
-
+    rows = await crud.get_recent_broadcasts()
     if not rows:
         await message.reply("📋 Рассылок пока нет.")
         return
@@ -550,47 +429,64 @@ async def list_broadcasts(message: Message):
 #  Загрузка при старте бота
 # ═══════════════════════════════════════
 
-async def load_active_broadcasts(bot: Bot):
+def _parse_dt(value) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+async def load_active_broadcasts(bot: Bot) -> int:
     """
     Восстанавливает активные рассылки из БД при старте бота.
-    Проверяет время последней отправки и решает — слать сразу или ждать.
+    Учитывает last_sent_at: если интервал уже истёк — отправляем сразу,
+    иначе дожимаем только остаток.
     """
-    db = await get_db()
-    try:
-        async with db.execute(
-            "SELECT * FROM broadcasts WHERE is_active = 1"
-        ) as cur:
-            rows = await cur.fetchall()
-    finally:
-        await db.close()
-
+    rows = await crud.get_active_broadcasts()
     if not rows:
         logging.info("📢 No active broadcasts to restore")
-        return
+        return 0
 
     restored = 0
     for row in rows:
         bid = row["id"]
-
         if bid in active_tasks:
-            logging.info(f"📢 Broadcast #{bid} already in memory, skipping")
             continue
+
+        interval_seconds = float(row["interval_hours"]) * 3600
+        last_sent = _parse_dt(row.get("last_sent_at")) or _parse_dt(row.get("created_at"))
+        elapsed = (datetime.now() - last_sent).total_seconds() if last_sent else interval_seconds
+        initial_delay = max(0.0, interval_seconds - elapsed)
 
         task = asyncio.create_task(
             broadcast_loop(
                 bot,
                 bid,
-                row["interval_hours"],
-                row["text"],
-                row["photo_file_id"],
-                skip_first_sleep=False  # После рестарта всегда ждём полный интервал
+                interval_hours=float(row["interval_hours"]),
+                text=row["text"],
+                photo_id=row["photo_file_id"],
+                initial_delay=initial_delay,
             )
         )
         active_tasks[bid] = task
         restored += 1
-        logging.info(
-            f"📢 Restored broadcast #{bid}: "
-            f"every {row['interval_hours']}h"
-        )
+        logging.info(f"📢 Restored broadcast #{bid}: every {row['interval_hours']}h, send in {initial_delay:.0f}s")
 
     logging.info(f"📢 Total broadcasts restored: {restored}")
+    return restored
+
+
+async def stop_all_broadcasts():
+    """Остановка всех задач рассылки при завершении работы бота."""
+    for bid, task in list(active_tasks.items()):
+        task.cancel()
+    for bid, task in list(active_tasks.items()):
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+    active_tasks.clear()

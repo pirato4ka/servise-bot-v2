@@ -1,5 +1,5 @@
 import logging
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.types import Message
 from aiogram.fsm.context import FSMContext
 from aiogram.filters import BaseFilter
@@ -31,11 +31,12 @@ async def handle_service_choice(message: Message, state: FSMContext):
     if current_state is not None:
         return
 
-    service = await crud.get_service_by_button(message.text)
-    if not service:
+    service_row = await crud.get_service_by_button(message.text)
+    if not service_row:
         return
 
     lang = await crud.get_user_lang(message.from_user.id)
+    service = crud.localize_service(service_row, lang)
     logging.info(f"🟢 SERVICE: user={message.from_user.id} chose='{service['id']}' lang={lang}")
 
     header = t("service_header", lang).format(

@@ -1,0 +1,18 @@
+services:
+  bot:
+    build: .
+    image: service-bot-v2
+    container_name: service-bot-v2
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # База в отдельном томе — иначе после перезапуска контейнера
+      # теряются админы, заявки и история
+      DB_PATH: /data/bot.db
+    volumes:
+      - bot-data:/data
+    stop_grace_period: 30s
+
+volumes:
+  bot-data:

@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+
+# База данных (в репозитории ей не место — там реальные данные клиентов)
+*.db
+*.db-wal
+*.db-shm
+
+# Архивы и мусор
+*.rar
+*.zip
+*.7z
+*.log
+
+# Кеши инструментов
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Локальные окружения
+.venv311/
